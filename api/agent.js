@@ -1,6 +1,9 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 
+export const maxDuration = 15; // Даємо функції більше часу на виконання
+
+
 // ==========================================
 // ФУНКЦІЯ: ВІДПРАВКА ЗВІТУ В TELEGRAM
 // ==========================================
@@ -153,22 +156,27 @@ export default async function handler(req, res) {
     
     logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
-       // Якщо ШІ каже BUY
+      // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
             logs.actions.push(`⏳ Отримую котирування від Jupiter для ${targetToken.baseToken.symbol}...`);
             
-            // КУПУЄМО НА 0.01 SOL (це 10000000 lamports)
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=300`);
+            // Налаштовуємо таймаут 7 секунд для запиту до Jupiter, щоб він не клав всю функцію
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+            // КУПУЄМО НА 0.01 SOL
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=300`, { signal: controller.signal });
+            clearTimeout(timeoutId); // Очищаємо таймаут, якщо запит пройшов успішно
             
             if (!quoteRes.ok) {
-                throw new Error(`Jupiter Quote API повернув помилку: ${quoteRes.status}`);
+                throw new Error(`Jupiter API помилка: ${quoteRes.status}. Можливо, для цього токена ще немає ліквідності.`);
             }
             
             const quoteData = await quoteRes.json();
             
             if (quoteData.error) {
-                throw new Error(`Помилка ліквідності: ${quoteData.error}`);
+                throw new Error(`Ліквідність: ${quoteData.error}`);
             }
 
             logs.actions.push(`⏳ Створюю транзакцію...`);
@@ -180,27 +188,19 @@ export default async function handler(req, res) {
                     quoteResponse: quoteData, 
                     userPublicKey: wallet.publicKey.toString(),
                     wrapAndUnwrapSol: true,
-                    dynamicComputeUnitLimit: true, // Це допоможе транзакції пройти швидше
-                    prioritizationFeeLamports: "auto" // Автоматична комісія мережі
+                    dynamicComputeUnitLimit: true,
+                    prioritizationFeeLamports: "auto"
                 })
             });
             
-            if (!swapRes.ok) {
-                 throw new Error(`Jupiter Swap API повернув помилку: ${swapRes.status}`);
-            }
+            if (!swapRes.ok) throw new Error("Не вдалося створити Swap-транзакцію");
 
             const { swapTransaction } = await swapRes.json();
 
-            if (!swapTransaction) {
-                 throw new Error("Jupiter не зміг згенерувати транзакцію.");
-            }
-
             logs.actions.push(`⏳ Відправляю в блокчейн...`);
-            
             const transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
             transaction.sign([wallet]);
             
-            // Відправляємо транзакцію через наш швидкий RPC
             const txid = await connection.sendRawTransaction(transaction.serialize(), { 
                 skipPreflight: true,
                 maxRetries: 2
@@ -208,11 +208,14 @@ export default async function handler(req, res) {
             
             logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
-            logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
-            console.error("Повна помилка:", err);
+            // Якщо це помилка таймауту або ліквідності
+            if (err.name === 'AbortError' || err.message.includes('fetch failed')) {
+                logs.actions.push(`\n❌ Помилка: Сервер Jupiter не відповів (замало ліквідності для ${targetToken.baseToken.symbol}). Спробую інший токен наступного разу.`);
+            } else {
+                logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
+            }
         }
     }
-
 
     // ==========================================
     // ФІНАЛ: ВІДПРАВКА ЗВІТУ
