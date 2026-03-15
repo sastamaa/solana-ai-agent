@@ -1,1 +1,15 @@
-{}
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/agent.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/api/agent.js"
+    }
+  ]
+}
