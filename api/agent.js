@@ -16,12 +16,11 @@ export default async function handler(req, res) {
     const priceChange24h = token.priceChange.h24;
     const volume24h = token.volume.h24;
 
-      // 3. Звертаємося до БЕЗКОШТОВНОГО Gemini API
-    const geminiKey = process.env.GEMINI_API_KEY;
+       // 3. Звертаємося до БЕЗКОШТОВНОГО Groq API (дуже швидкий ШІ)
+    const groqKey = process.env.GROQ_API_KEY;
     
-    // Перевірка, чи ключ взагалі є
-    if (!geminiKey) {
-       throw new Error("Не знайдено ключ GEMINI_API_KEY у налаштуваннях Vercel");
+    if (!groqKey) {
+       throw new Error("Не знайдено ключ GROQ_API_KEY у налаштуваннях Vercel");
     }
 
     const prompt = `Ти професійний крипто-трейдер на Solana. Проаналізуй цей токен:
@@ -31,32 +30,34 @@ export default async function handler(req, res) {
 Об'єм торгів: $${volume24h}
 Дай коротку відповідь: одне слово "BUY" або "WAIT", і одне речення пояснення. Формат: "РІШЕННЯ: пояснення"`;
 
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+    // Запит до Groq (модель Llama 3 70B - дуже розумна і швидка)
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${groqKey}`
+      },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
+        model: 'llama3-70b-8192', 
+        messages: [{ role: 'user', content: prompt }]
       })
     });
 
-    const geminiData = await geminiResponse.json();
+    const groqData = await groqResponse.json();
     
     let aiDecision = "Помилка ШІ";
     
-    // Покращена перевірка помилок
-    if (geminiData.candidates && geminiData.candidates.length > 0) {
-        aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
-    } else if (geminiData.error) {
-        // Якщо Google повернув помилку (напр., поганий ключ)
-        aiDecision = `Помилка API: ${geminiData.error.message}`;
+    if (groqData.choices && groqData.choices.length > 0) {
+        aiDecision = groqData.choices[0].message.content.trim();
+    } else if (groqData.error) {
+        aiDecision = `Помилка API: ${groqData.error.message}`;
     } else {
-        // Якщо відповідь порожня або заблокована
-        aiDecision = `Невідома помилка: ${JSON.stringify(geminiData)}`;
+        aiDecision = `Невідома помилка: ${JSON.stringify(groqData)}`;
     }
 
     // 4. Виводимо результат
     res.status(200).json({
-      agent_status: "🧠 ШІ Gemini Активний",
+      agent_status: "🧠 ШІ Groq Активний",
       wallet: wallet.publicKey.toString(),
       market_data: {
         token: token.baseToken.symbol,
