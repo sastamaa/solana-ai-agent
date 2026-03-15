@@ -1,9 +1,10 @@
 {
+  "name": "solana-ai-agent",
+  "version": "1.0.0",
+  "type": "module",
   "dependencies": {
     "@solana/web3.js": "^1.87.6",
-    "@jup-ag/api": "^6.0.21"
-  },
-  "scripts": {
-    "vercel-build": "vercel-build"
+    "@jup-ag/api": "^6.0.21",
+    "bs58": "^5.0.0"
   }
 }
