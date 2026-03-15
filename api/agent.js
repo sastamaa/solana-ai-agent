@@ -16,8 +16,14 @@ export default async function handler(req, res) {
     const priceChange24h = token.priceChange.h24;
     const volume24h = token.volume.h24;
 
-    // 3. Звертаємося до БЕЗКОШТОВНОГО Gemini API
+      // 3. Звертаємося до БЕЗКОШТОВНОГО Gemini API
     const geminiKey = process.env.GEMINI_API_KEY;
+    
+    // Перевірка, чи ключ взагалі є
+    if (!geminiKey) {
+       throw new Error("Не знайдено ключ GEMINI_API_KEY у налаштуваннях Vercel");
+    }
+
     const prompt = `Ти професійний крипто-трейдер на Solana. Проаналізуй цей токен:
 Назва: ${token.baseToken.symbol}
 Ціна: $${price}
@@ -36,15 +42,21 @@ export default async function handler(req, res) {
     const geminiData = await geminiResponse.json();
     
     let aiDecision = "Помилка ШІ";
+    
+    // Покращена перевірка помилок
     if (geminiData.candidates && geminiData.candidates.length > 0) {
         aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
+    } else if (geminiData.error) {
+        // Якщо Google повернув помилку (напр., поганий ключ)
+        aiDecision = `Помилка API: ${geminiData.error.message}`;
     } else {
-        console.error("Gemini error:", geminiData);
+        // Якщо відповідь порожня або заблокована
+        aiDecision = `Невідома помилка: ${JSON.stringify(geminiData)}`;
     }
 
-    // 4. Виводимо результат (зміни grok_analysis на ai_analysis)
+    // 4. Виводимо результат
     res.status(200).json({
-      agent_status: "🧠 Gemini Активний",
+      agent_status: "🧠 ШІ Gemini Активний",
       wallet: wallet.publicKey.toString(),
       market_data: {
         token: token.baseToken.symbol,
