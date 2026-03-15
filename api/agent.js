@@ -116,11 +116,18 @@ export default async function handler(req, res) {
     logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
     
     // Шукаємо активні токени
-    const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
+    const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
     // Фільтруємо безпечні токени
-    const activePairs = searchData.pairs.filter(p => p.chainId === 'solana' && p.volume && p.volume.h24 > 50000 && p.liquidity && p.liquidity.usd > 10000);
+   const activePairs = searchData.pairs.filter(p => 
+    p.chainId === 'solana' && 
+    p.volume && p.volume.h24 > 10000 && // знизив поріг об'єму для нових монет
+    p.liquidity && p.liquidity.usd > 5000 && 
+    p.baseToken.symbol !== 'SOL' && 
+    p.baseToken.symbol !== 'WSOL' && 
+    p.baseToken.symbol !== 'USDC'
+);
     
     if (activePairs.length === 0) {
         logs.actions.push("Ринок порожній. Нічого безпечного не знайдено.");
