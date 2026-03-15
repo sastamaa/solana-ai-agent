@@ -1,37 +1,59 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 
+// ==========================================
+// ФУНКЦІЯ: ВІДПРАВКА ЗВІТУ В TELEGRAM
+// ==========================================
+async function sendTelegramMessage(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+      console.log("Ключі Telegram не налаштовані.");
+      return; 
+  }
+  
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // Використовуємо parse_mode: HTML, щоб зробити текст красивим
+    body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true })
+  }).catch(err => console.error("Помилка відправки в Telegram:", err));
+}
+
 export default async function handler(req, res) {
+  let logs = { actions: [] }; // Сюди ми збираємо всі дії для звіту
+
   try {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const groqKey = process.env.GROQ_API_KEY;
-    if (!privateKey || !groqKey) throw new Error("Ключі не налаштовані");
+    
+    if (!privateKey || !groqKey) {
+        throw new Error("Не вистачає ключів Solana або Groq у Vercel!");
+    }
     
     const wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
     const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
-const connection = new Connection(rpcUrl);
+    const connection = new Connection(rpcUrl);
     const solMint = "So11111111111111111111111111111111111111112";
 
-    let logs = { wallet: wallet.publicKey.toString(), actions: [] };
-
     // ==========================================
-    // СТАДІЯ 1: МЕНЕДЖЕР ПОРТФЕЛЯ (ПРОДАЖ)
+    // СТАДІЯ 1: МЕНЕДЖЕР ПОРТФЕЛЯ (ПЕРЕВІРКА І ПРОДАЖ)
     // ==========================================
-    logs.actions.push("Сканую гаманець на наявність токенів...");
+    logs.actions.push("🔍 <b>Перевірка портфеля:</b>");
     
     // Отримуємо всі токени з гаманця
     const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
-programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+      programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
     let hasTokensToSell = false;
 
-    // Перевіряємо кожен токен
     for (const acc of accounts.value) {
       const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
       const mintAddress = acc.account.data.parsed.info.mint;
       
-      // Якщо баланс в доларовому еквіваленті хоч трохи значний (ігноруємо SOL і порожні)
+      // Якщо у нас є якийсь токен (не SOL) з балансом
       if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
         hasTokensToSell = true;
         
@@ -45,10 +67,10 @@ programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
             
             // ЛОГІКА ПРОДАЖУ: Якщо ціна виросла на >15% АБО впала на >10%
             if (change24h >= 15 || change24h <= -10) {
-                logs.actions.push(`Вирішено ПРОДАТИ ${pair.baseToken.symbol}. Зміна ціни: ${change24h}%`);
+                logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
-                    // Отримуємо котирування на продаж ВСЬОГО балансу цього токена
+                    // Котирування на продаж ВСЬОГО балансу цього токена
                     const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`);
                     const quoteData = await quoteRes.json();
 
@@ -63,36 +85,54 @@ programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
                     transaction.sign([wallet]);
                     const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
                     
-                    logs.actions.push(`✅ Успішно продано! TX: https://solscan.io/tx/${txid}`);
-                    return res.status(200).json(logs); // Завершуємо роботу після успішного продажу
+                    logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
+                    
+                    // Відправляємо звіт і завершуємо (щоб не купувати відразу)
+                    const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
+                    await sendTelegramMessage(reportText);
+                    return res.status(200).json(logs); 
+
                 } catch (err) {
                     logs.actions.push(`❌ Помилка продажу: ${err.message}`);
                 }
             } else {
-                logs.actions.push(`Токен ${pair.baseToken.symbol} тримаємо (HOLD). Зміна: ${change24h}%`);
+                logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). Зміна: ${change24h}%`);
             }
         }
       }
     }
 
-    // Якщо ми маємо токени, але їх не треба продавати - ми не купуємо нові, щоб не витратити всі SOL
+    // Дисципліна: якщо маємо токени, але не продаємо - не витрачаємо інші SOL
     if (hasTokensToSell) {
-        logs.actions.push("В гаманці є активи, нові покупки призупинено до моменту фіксації прибутку.");
+        logs.actions.push("\n⏸ В гаманці є активи. Нові покупки призупинено.");
+        const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
+        await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
     }
 
     // ==========================================
-    // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ 0.05 SOL)
+    // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
     // ==========================================
-    logs.actions.push("Гаманець чистий. Починаю пошук нових токенів...");
+    logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
     
+    // Шукаємо активні токени
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
     const searchData = await searchRes.json();
+    
+    // Фільтруємо безпечні токени
     const activePairs = searchData.pairs.filter(p => p.chainId === 'solana' && p.volume && p.volume.h24 > 50000 && p.liquidity && p.liquidity.usd > 10000);
     
-    if (activePairs.length === 0) return res.status(200).json({ status: "WAIT", logs });
+    if (activePairs.length === 0) {
+        logs.actions.push("Ринок порожній. Нічого безпечного не знайдено.");
+        const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
+        await sendTelegramMessage(reportText);
+        return res.status(200).json(logs);
+    }
 
+    // Обираємо випадковий з ТОП-5
     const targetToken = activePairs[Math.floor(Math.random() * Math.min(5, activePairs.length))];
+    
+    // Запит до Groq ШІ
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -103,12 +143,14 @@ programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     
     const groqData = await groqResponse.json();
     const aiDecision = groqData.choices[0].message.content;
-    logs.actions.push(`ШІ Аналіз: ${aiDecision}`);
+    
+    logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
+    // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
-            // КУПУЄМО НА 0.01 SOL (це 10000000 lamports)
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=300`);
+            // КУПУЄМО НА 0.02 SOL (це 20000000 lamports)
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=300`);
             const quoteData = await quoteRes.json();
 
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
@@ -122,15 +164,23 @@ programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
             transaction.sign([wallet]);
             const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
             
-            logs.actions.push(`✅ Успішно КУПЛЕНО ${targetToken.baseToken.symbol} на 0.05 SOL! TX: https://solscan.io/tx/${txid}`);
+            logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
-            logs.actions.push(`❌ Помилка покупки: ${err.message}`);
+            logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
         }
     }
+
+    // ==========================================
+    // ФІНАЛ: ВІДПРАВКА ЗВІТУ
+    // ==========================================
+    const finalReport = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
+    await sendTelegramMessage(finalReport);
 
     res.status(200).json(logs);
 
   } catch (error) {
+    // Відправляємо помилку в Телеграм, щоб ти знала, якщо бот впаде
+    await sendTelegramMessage(`⚠️ <b>Критична помилка агента:</b>\n${error.message}`);
     res.status(500).json({ error: error.message });
   }
 }
