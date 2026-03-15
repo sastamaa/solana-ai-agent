@@ -7,32 +7,44 @@ export default async function handler(req, res) {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
     
-    // 2. Агент дивиться на ринок (Беремо дані з Dexscreener для токена BONK)
-    // Це реальні дані прямо зараз!
-    const response = await fetch('https://api.dexscreener.com/latest/dex/tokens/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
-    const data = await response.json();
-    const token = data.pairs[0];
+    // 2. Беремо дані з ринку (наприклад, токен BONK)
+    const dexResponse = await fetch('https://api.dexscreener.com/latest/dex/tokens/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
+    const dexData = await dexResponse.json();
+    const token = dexData.pairs[0];
     
-    // 3. Логіка агента (Поки що проста: якщо об'єм торгів великий і ціна падає - купуємо дно)
     const price = parseFloat(token.priceUsd);
     const priceChange24h = token.priceChange.h24;
     const volume24h = token.volume.h24;
-    
-    let decision = "WAIT (ЧЕКАТИ)";
-    let reason = "Ринок нестабільний, краще почекати.";
 
-    // Просте правило для тесту:
-    if (priceChange24h < 0 && volume24h > 1000000) {
-      decision = "BUY (КУПУВАТИ)";
-      reason = `Ціна впала на ${priceChange24h}%, але люди багато торгують ($${volume24h}). Час купувати на низах!`;
-    } else if (priceChange24h > 10) {
-      decision = "SELL (ПРОДАВАТИ)";
-      reason = `Ціна виросла на ${priceChange24h}%, фіксуємо прибуток!`;
+    // 3. Звертаємося до БЕЗКОШТОВНОГО Gemini API
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const prompt = `Ти професійний крипто-трейдер на Solana. Проаналізуй цей токен:
+Назва: ${token.baseToken.symbol}
+Ціна: $${price}
+Зміна за 24г: ${priceChange24h}%
+Об'єм торгів: $${volume24h}
+Дай коротку відповідь: одне слово "BUY" або "WAIT", і одне речення пояснення. Формат: "РІШЕННЯ: пояснення"`;
+
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+
+    const geminiData = await geminiResponse.json();
+    
+    let aiDecision = "Помилка ШІ";
+    if (geminiData.candidates && geminiData.candidates.length > 0) {
+        aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
+    } else {
+        console.error("Gemini error:", geminiData);
     }
 
-    // 4. Агент видає звіт тобі на екран
+    // 4. Виводимо результат (зміни grok_analysis на ai_analysis)
     res.status(200).json({
-      agent_status: "🟢 Активний",
+      agent_status: "🧠 ШІ Gemini Активний",
       wallet: wallet.publicKey.toString(),
       market_data: {
         token: token.baseToken.symbol,
@@ -40,11 +52,7 @@ export default async function handler(req, res) {
         change_24h: `${priceChange24h}%`,
         volume_24h: `$${volume24h}`
       },
-      agent_thought_process: {
-        decision: decision,
-        reason: reason
-      },
-      action_taken: "Поки що тільки аналіз (Торгівля вимкнена для безпеки)"
+      ai_analysis: aiDecision
     });
 
   } catch (error) {
