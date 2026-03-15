@@ -8,7 +8,8 @@ export default async function handler(req, res) {
     if (!privateKey || !groqKey) throw new Error("Ключі не налаштовані");
     
     const wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
-    const connection = new Connection('https://api.mainnet-beta.solana.com');
+    const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+const connection = new Connection(rpcUrl);
     const solMint = "So11111111111111111111111111111111111111112";
 
     let logs = { wallet: wallet.publicKey.toString(), actions: [] };
