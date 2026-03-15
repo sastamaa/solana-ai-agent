@@ -44,7 +44,7 @@ export default async function handler(req, res) {
 
     // 4. Виводимо результат (зміни grok_analysis на ai_analysis)
     res.status(200).json({
-      agent_status: "🧠 ШІ Gemini Активний",
+      agent_status: "🧠 Gemini Активний",
       wallet: wallet.publicKey.toString(),
       market_data: {
         token: token.baseToken.symbol,
