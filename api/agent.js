@@ -153,29 +153,66 @@ export default async function handler(req, res) {
     
     logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
-    // Якщо ШІ каже BUY
+       // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
-            // КУПУЄМО НА 0.02 SOL (це 20000000 lamports)
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=300`);
+            logs.actions.push(`⏳ Отримую котирування від Jupiter для ${targetToken.baseToken.symbol}...`);
+            
+            // КУПУЄМО НА 0.01 SOL (це 10000000 lamports)
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=300`);
+            
+            if (!quoteRes.ok) {
+                throw new Error(`Jupiter Quote API повернув помилку: ${quoteRes.status}`);
+            }
+            
             const quoteData = await quoteRes.json();
+            
+            if (quoteData.error) {
+                throw new Error(`Помилка ліквідності: ${quoteData.error}`);
+            }
 
+            logs.actions.push(`⏳ Створюю транзакцію...`);
+            
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() })
+                body: JSON.stringify({ 
+                    quoteResponse: quoteData, 
+                    userPublicKey: wallet.publicKey.toString(),
+                    wrapAndUnwrapSol: true,
+                    dynamicComputeUnitLimit: true, // Це допоможе транзакції пройти швидше
+                    prioritizationFeeLamports: "auto" // Автоматична комісія мережі
+                })
             });
+            
+            if (!swapRes.ok) {
+                 throw new Error(`Jupiter Swap API повернув помилку: ${swapRes.status}`);
+            }
+
             const { swapTransaction } = await swapRes.json();
 
+            if (!swapTransaction) {
+                 throw new Error("Jupiter не зміг згенерувати транзакцію.");
+            }
+
+            logs.actions.push(`⏳ Відправляю в блокчейн...`);
+            
             const transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
             transaction.sign([wallet]);
-            const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
+            
+            // Відправляємо транзакцію через наш швидкий RPC
+            const txid = await connection.sendRawTransaction(transaction.serialize(), { 
+                skipPreflight: true,
+                maxRetries: 2
+            });
             
             logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
             logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
+            console.error("Повна помилка:", err);
         }
     }
+
 
     // ==========================================
     // ФІНАЛ: ВІДПРАВКА ЗВІТУ
