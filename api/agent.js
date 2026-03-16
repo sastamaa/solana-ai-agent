@@ -1,5 +1,6 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
+import fetch from 'node-fetch';
 
 export const maxDuration = 60; // Дозволяємо функції працювати до 60 секунд, щоб не було помилок fetch failed
 
