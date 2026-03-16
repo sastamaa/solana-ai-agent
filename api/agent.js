@@ -68,7 +68,7 @@ export default async function handler(req, res) {
             const pair = dexData.pairs[0];
             const change24h = pair.priceChange.h24;
             
-            if (change24h >= 50 || change24h <= -25) {
+            if (change24h >= 20 || change24h <= -10) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
