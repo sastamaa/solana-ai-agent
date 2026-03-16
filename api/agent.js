@@ -68,7 +68,7 @@ export default async function handler(req, res) {
             const pair = dexData.pairs[0];
             const change24h = pair.priceChange.h24;
             
-            if (change24h >= 15 || change24h <= -10) {
+            if (change24h >= 50 || change24h <= -25) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
@@ -157,7 +157,7 @@ export default async function handler(req, res) {
     }
 
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
-    const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
+const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Зміна за 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Якщо зміна більше 40% - це занадто пізно, пиши "WAIT". Напиши "BUY", тільки якщо зміна від 0% до 25% і бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
