@@ -65,10 +65,9 @@ export default async function handler(req, res) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
-                    const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
-                    const quoteData = await quoteRes.json();
-
-                    const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
+                   const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
+// ...
+const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ 
@@ -165,22 +164,10 @@ export default async function handler(req, res) {
 let quoteRes;
 for (let i = 0; i < 3; i++) {
     try {
-        quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=1000`);
-        if (quoteRes.ok) break; // Якщо успішно, виходимо з циклу
-    } catch (e) {
-        if (i === 2) throw new Error(`Не вдалося з'єднатися з Jupiter після 3 спроб: ${e.message}`);
-        await new Promise(res => setTimeout(res, 1000)); // Чекаємо 1 секунду перед наступною спробою
-    }
-}            
-            if (!quoteRes.ok) {
-                 throw new Error(`Jupiter відмовив: ${quoteRes.status}. (Недостатньо ліквідності).`);
-            }
-            
-            const quoteData = await quoteRes.json();
-            if (quoteData.error) throw new Error(quoteData.error);
+      quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=1000`);
+// ...
+const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
 
-            // Створення транзакції
-            const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
