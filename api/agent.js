@@ -74,10 +74,8 @@ export default async function handler(req, res) {
                 
                 try {
                     // Котирування на продаж ВСЬОГО балансу цього токена
-                    const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&dynamicSlippage=true&maxSlippageBps=1000`);
-                    const quoteData = await quoteRes.json();
-
-                    const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
+const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);                    const quoteData = await quoteRes.json();
+const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() })
@@ -166,8 +164,7 @@ export default async function handler(req, res) {
             const timeoutId = setTimeout(() => controller.abort(), 7000);
 
             // КУПУЄМО НА 0.01 SOL
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&dynamicSlippage=true&maxSlippageBps=1000`), { signal: controller.signal });
-            clearTimeout(timeoutId); // Очищаємо таймаут, якщо запит пройшов успішно
+const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=1000`, { signal: controller.signal });            clearTimeout(timeoutId); // Очищаємо таймаут, якщо запит пройшов успішно
             
             if (!quoteRes.ok) {
                 throw new Error(`Jupiter API помилка: ${quoteRes.status}. Можливо, для цього токена ще немає ліквідності.`);
