@@ -1,8 +1,7 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 
-export const maxDuration = 60; // Дозволяємо скрипту працювати до 60 секунд (ліміт Hobby плану)
-
+export const maxDuration = 60; // Дозволяємо функції працювати до 60 секунд, щоб не було помилок fetch failed
 
 // ==========================================
 // ФУНКЦІЯ: ВІДПРАВКА ЗВІТУ В TELEGRAM
@@ -10,22 +9,18 @@ export const maxDuration = 60; // Дозволяємо скрипту працю
 async function sendTelegramMessage(text) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
-      console.log("Ключі Telegram не налаштовані.");
-      return; 
-  }
+  if (!token || !chatId) return; 
   
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    // Використовуємо parse_mode: HTML, щоб зробити текст красивим
     body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true })
   }).catch(err => console.error("Помилка відправки в Telegram:", err));
 }
 
 export default async function handler(req, res) {
-  let logs = { actions: [] }; // Сюди ми збираємо всі дії для звіту
+  let logs = { actions: [] };
 
   try {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
@@ -45,7 +40,6 @@ export default async function handler(req, res) {
     // ==========================================
     logs.actions.push("🔍 <b>Перевірка портфеля:</b>");
     
-    // Отримуємо всі токени з гаманця
     const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
@@ -56,11 +50,9 @@ export default async function handler(req, res) {
       const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
       const mintAddress = acc.account.data.parsed.info.mint;
       
-      // Якщо у нас є якийсь токен (не SOL) з балансом
       if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
         hasTokensToSell = true;
         
-        // Дізнаємось ринкову ціну токена
         const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
         const dexData = await dexRes.json();
         
@@ -68,27 +60,39 @@ export default async function handler(req, res) {
             const pair = dexData.pairs[0];
             const change24h = pair.priceChange.h24;
             
-            // ЛОГІКА ПРОДАЖУ: Якщо ціна виросла на >15% АБО впала на >10%
             if (change24h >= 15 || change24h <= -10) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
-                    // Котирування на продаж ВСЬОГО балансу цього токена
-const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);                    const quoteData = await quoteRes.json();
-const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
+                    const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
+                    const quoteData = await quoteRes.json();
+
+                    const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() })
+                        body: JSON.stringify({ 
+                            quoteResponse: quoteData, 
+                            userPublicKey: wallet.publicKey.toString(),
+                            wrapAndUnwrapSol: true,
+                            dynamicComputeUnitLimit: true,
+                            prioritizationFeeLamports: "auto",
+                            dynamicSlippage: { maxBps: 1000 } // Прослизання для успішного продажу
+                        })
                     });
+                    
+                    if (!swapRes.ok) throw new Error("Jupiter не зміг згенерувати транзакцію продажу.");
                     const { swapTransaction } = await swapRes.json();
 
                     const transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
                     transaction.sign([wallet]);
-                    const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
+                    
+                    const txid = await connection.sendRawTransaction(transaction.serialize(), { 
+                        skipPreflight: true,
+                        maxRetries: 5
+                    });
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
                     
-                    // Відправляємо звіт і завершуємо (щоб не купувати відразу)
                     const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
                     await sendTelegramMessage(reportText);
                     return res.status(200).json(logs); 
@@ -103,24 +107,22 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
       }
     }
 
-    // Дисципліна: якщо маємо токени, але не продаємо - не витрачаємо інші SOL
     if (hasTokensToSell) {
         logs.actions.push("\n⏸ В гаманці є активи. Нові покупки призупинено.");
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
     }
-    
-        // ==========================================
+
+    // ==========================================
     // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
     // ==========================================
     logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
     
-    // Шукаємо активні токени на Dexscreener
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
-    // ФІЛЬТРУЄМО: тільки стабільні пули з ліквідністю більше $50k
+    // Шукаємо токени з об'ємом і пулом більше $50,000
     const activePairs = searchData.pairs.filter(p => 
         p.chainId === 'solana' && 
         p.volume && p.volume.h24 > 50000 && 
@@ -140,7 +142,6 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     // Обираємо випадковий токен
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
     
-    // Одразу питаємо ШІ (без непотрібних тестів Jupiter)
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -154,22 +155,22 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     
     logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
-       // Якщо ШІ каже BUY
+    // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
-            // ЗАПИТ КОТИРУВАННЯ: Без таймаутів, з нормальним прослизанням 10%
+            // Котирування (10% прослизання)
             const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
             
             if (!quoteRes.ok) {
-                 throw new Error(`Jupiter відмовив у котируванні (Статус: ${quoteRes.status})`);
+                 throw new Error(`Jupiter відмовив: ${quoteRes.status}. (Недостатньо ліквідності).`);
             }
             
             const quoteData = await quoteRes.json();
             if (quoteData.error) throw new Error(quoteData.error);
 
-            // ЗАПИТ SWAP (Обмін): Без таймаутів!
+            // Створення транзакції
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -183,25 +184,30 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 })
             });
             
-            if (!swapRes.ok) throw new Error(`Jupiter не зміг згенерувати Swap (Статус: ${swapRes.status})`);
-
+            if (!swapRes.ok) throw new Error("Jupiter не зміг згенерувати Swap-транзакцію.");
             const { swapTransaction } = await swapRes.json();
 
             logs.actions.push(`⏳ Відправляю в блокчейн...`);
             const transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
             transaction.sign([wallet]);
+            const rawTransaction = transaction.serialize();
             
-            const txid = await connection.sendRawTransaction(transaction.serialize(), { 
-                skipPreflight: true,
-                maxRetries: 2
-            });
+            let txid;
+            try {
+                // Відправляємо без очікування, щоб не зависало
+                txid = await connection.sendRawTransaction(rawTransaction, { 
+                    skipPreflight: true,
+                    maxRetries: 5
+                });
+                logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
+            } catch (rpcError) {
+                throw new Error(`Помилка мережі Solana (RPC): ${rpcError.message}`);
+            }
             
-            logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
              logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
         }
     }
-
 
     // ==========================================
     // ФІНАЛ: ВІДПРАВКА ЗВІТУ
@@ -212,7 +218,6 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     res.status(200).json(logs);
 
   } catch (error) {
-    // Відправляємо помилку в Телеграм, щоб ти знала, якщо бот впаде
     await sendTelegramMessage(`⚠️ <b>Критична помилка агента:</b>\n${error.message}`);
     res.status(500).json({ error: error.message });
   }
