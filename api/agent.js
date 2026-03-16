@@ -179,16 +179,17 @@ const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solM
             logs.actions.push(`⏳ Створюю транзакцію...`);
             
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    quoteResponse: quoteData, 
-                    userPublicKey: wallet.publicKey.toString(),
-                    wrapAndUnwrapSol: true,
-                    dynamicComputeUnitLimit: true,
-                    prioritizationFeeLamports: "auto"
-                })
-            });
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+        quoteResponse: quoteData, 
+        userPublicKey: wallet.publicKey.toString(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: "auto",
+        dynamicSlippage: { maxBps: 1000 } // ДОДАЛИ СЮДИ! Це дозволить гнучко купувати волатильні монети
+    })
+});
             
             if (!swapRes.ok) throw new Error("Не вдалося створити Swap-транзакцію");
 
