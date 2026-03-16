@@ -1,7 +1,7 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 
-export const maxDuration = 15; // Даємо функції більше часу на виконання
+export const maxDuration = 60; // Дозволяємо скрипту працювати до 60 секунд (ліміт Hobby плану)
 
 
 // ==========================================
