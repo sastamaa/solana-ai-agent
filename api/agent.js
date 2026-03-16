@@ -2,7 +2,7 @@ import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/we
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
 
-export const maxDuration = 60; // Захист від таймауту
+export const maxDuration = 60;
 
 // ==========================================
 // ФУНКЦІЯ: ВІДПРАВКА ЗВІТУ В TELEGRAM
@@ -26,11 +26,18 @@ export default async function handler(req, res) {
   try {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const groqKey = process.env.GROQ_API_KEY;
+    const jupiterKey = process.env.JUPITER_API_KEY; // НОВИЙ КЛЮЧ JUPITER
     
-    if (!privateKey || !groqKey) {
-        throw new Error("Не вистачає ключів Solana або Groq у Vercel!");
+    if (!privateKey || !groqKey || !jupiterKey) {
+        throw new Error("Не вистачає ключів Solana, Groq або Jupiter у Vercel!");
     }
     
+    // Створюємо "перепустку" для Jupiter
+    const jupHeaders = {
+        'Content-Type': 'application/json',
+        'x-api-key': jupiterKey
+    };
+
     const wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
     const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
     const connection = new Connection(rpcUrl);
@@ -65,13 +72,15 @@ export default async function handler(req, res) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
-                    // НОВИЙ API JUPITER (ПРОДАЖ)
-                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
+                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`, {
+                        method: 'GET',
+                        headers: jupHeaders // Додаємо ключ сюди
+                    });
                     const quoteData = await quoteRes.json();
 
                     const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: jupHeaders, // Додаємо ключ сюди
                         body: JSON.stringify({ 
                             quoteResponse: quoteData, 
                             userPublicKey: wallet.publicKey.toString(),
@@ -88,13 +97,9 @@ export default async function handler(req, res) {
                     const transaction = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
                     transaction.sign([wallet]);
                     
-                    const txid = await connection.sendRawTransaction(transaction.serialize(), { 
-                        skipPreflight: true,
-                        maxRetries: 5
-                    });
+                    const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 5 });
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
-                    
                     const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
                     await sendTelegramMessage(reportText);
                     return res.status(200).json(logs); 
@@ -141,7 +146,6 @@ export default async function handler(req, res) {
     }
 
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
-    
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -159,11 +163,13 @@ export default async function handler(req, res) {
         try {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
-            // НОВИЙ API JUPITER З МЕХАНІЗМОМ ПОВТОРУ
             let quoteRes;
             for (let i = 0; i < 3; i++) {
                 try {
-                    quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
+                    quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`, {
+                        method: 'GET',
+                        headers: jupHeaders // Додаємо ключ
+                    });
                     if (quoteRes.ok) break; 
                 } catch (e) {
                     if (i === 2) throw new Error(`Не вдалося з'єднатися з Jupiter: ${e.message}`);
@@ -172,8 +178,8 @@ export default async function handler(req, res) {
             }
             
             if (!quoteRes || !quoteRes.ok) {
-    const errorText = quoteRes ? await quoteRes.text() : 'Немає відповіді від сервера';
-    throw new Error(`Jupiter відмовив: ${errorText}`);
+                const errorText = quoteRes ? await quoteRes.text() : 'Немає відповіді';
+                throw new Error(`Jupiter відмовив: ${errorText}`);
             }
             
             const quoteData = await quoteRes.json();
@@ -181,7 +187,7 @@ export default async function handler(req, res) {
 
             const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: jupHeaders, // Додаємо ключ
                 body: JSON.stringify({ 
                     quoteResponse: quoteData, 
                     userPublicKey: wallet.publicKey.toString(),
@@ -200,10 +206,7 @@ export default async function handler(req, res) {
             transaction.sign([wallet]);
             const rawTransaction = transaction.serialize();
             
-            let txid = await connection.sendRawTransaction(rawTransaction, { 
-                skipPreflight: true,
-                maxRetries: 5
-            });
+            let txid = await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 5 });
             logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
             
         } catch (err) {
@@ -211,9 +214,6 @@ export default async function handler(req, res) {
         }
     }
 
-    // ==========================================
-    // ФІНАЛ: ВІДПРАВКА ЗВІТУ
-    // ==========================================
     const finalReport = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
     await sendTelegramMessage(finalReport);
 
