@@ -2,7 +2,7 @@ import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/we
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
 
-export const maxDuration = 60; // Дозволяємо функції працювати до 60 секунд, щоб не було помилок fetch failed
+export const maxDuration = 60; // Захист від таймауту
 
 // ==========================================
 // ФУНКЦІЯ: ВІДПРАВКА ЗВІТУ В TELEGRAM
@@ -65,9 +65,11 @@ export default async function handler(req, res) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
                 
                 try {
-                   const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
-// ...
-const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
+                    // НОВИЙ API JUPITER (ПРОДАЖ)
+                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`);
+                    const quoteData = await quoteRes.json();
+
+                    const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ 
@@ -76,7 +78,7 @@ const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                             wrapAndUnwrapSol: true,
                             dynamicComputeUnitLimit: true,
                             prioritizationFeeLamports: "auto",
-                            dynamicSlippage: { maxBps: 1000 } // Прослизання для успішного продажу
+                            dynamicSlippage: { maxBps: 1000 }
                         })
                     });
                     
@@ -122,7 +124,6 @@ const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
-    // Шукаємо токени з об'ємом і пулом більше $50,000
     const activePairs = searchData.pairs.filter(p => 
         p.chainId === 'solana' && 
         p.volume && p.volume.h24 > 50000 && 
@@ -139,7 +140,6 @@ const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
         return res.status(200).json(logs);
     }
 
-    // Обираємо випадковий токен
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
     
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
@@ -155,19 +155,30 @@ const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
     
     logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
-    // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
-            // Котирування (10% прослизання)
-let quoteRes;
-for (let i = 0; i < 3; i++) {
-    try {
-      quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=1000`);
-// ...
-const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
+            // НОВИЙ API JUPITER З МЕХАНІЗМОМ ПОВТОРУ
+            let quoteRes;
+            for (let i = 0; i < 3; i++) {
+                try {
+                    quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
+                    if (quoteRes.ok) break; 
+                } catch (e) {
+                    if (i === 2) throw new Error(`Не вдалося з'єднатися з Jupiter: ${e.message}`);
+                    await new Promise(res => setTimeout(res, 1000)); 
+                }
+            }
+            
+            if (!quoteRes || !quoteRes.ok) {
+                 throw new Error(`Jupiter відмовив (можливо, недостатньо ліквідності).`);
+            }
+            
+            const quoteData = await quoteRes.json();
+            if (quoteData.error) throw new Error(quoteData.error);
 
+            const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
@@ -188,17 +199,11 @@ const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
             transaction.sign([wallet]);
             const rawTransaction = transaction.serialize();
             
-            let txid;
-            try {
-                // Відправляємо без очікування, щоб не зависало
-                txid = await connection.sendRawTransaction(rawTransaction, { 
-                    skipPreflight: true,
-                    maxRetries: 5
-                });
-                logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
-            } catch (rpcError) {
-                throw new Error(`Помилка мережі Solana (RPC): ${rpcError.message}`);
-            }
+            let txid = await connection.sendRawTransaction(rawTransaction, { 
+                skipPreflight: true,
+                maxRetries: 5
+            });
+            logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
             
         } catch (err) {
              logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
