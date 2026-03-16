@@ -74,7 +74,7 @@ export default async function handler(req, res) {
                 
                 try {
                     // Котирування на продаж ВСЬОГО балансу цього токена
-                    const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`);
+                    const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&dynamicSlippage=true&maxSlippageBps=1000`);
                     const quoteData = await quoteRes.json();
 
                     const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
@@ -166,7 +166,7 @@ export default async function handler(req, res) {
             const timeoutId = setTimeout(() => controller.abort(), 7000);
 
             // КУПУЄМО НА 0.01 SOL
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=300`, { signal: controller.signal });
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&dynamicSlippage=true&maxSlippageBps=1000`), { signal: controller.signal });
             clearTimeout(timeoutId); // Очищаємо таймаут, якщо запит пройшов успішно
             
             if (!quoteRes.ok) {
