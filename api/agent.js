@@ -110,7 +110,8 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
     }
-    // ==========================================
+    
+        // ==========================================
     // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
     // ==========================================
     logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
@@ -119,18 +120,18 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
-    // ФІЛЬТРУЄМО: тільки надійні пули з великою ліквідністю
+    // ФІЛЬТРУЄМО: тільки стабільні пули з ліквідністю більше $50k
     const activePairs = searchData.pairs.filter(p => 
         p.chainId === 'solana' && 
         p.volume && p.volume.h24 > 50000 && 
-        p.liquidity && p.liquidity.usd > 50000 && // Ставимо 50k для безпеки
+        p.liquidity && p.liquidity.usd > 50000 && 
         p.baseToken.symbol !== 'SOL' && 
         p.baseToken.symbol !== 'WSOL' && 
         p.baseToken.symbol !== 'USDC'
     );
     
     if (activePairs.length === 0) {
-        logs.actions.push("Ринок порожній. Нічого не знайдено.");
+        logs.actions.push("Ринок порожній. Нічого безпечного не знайдено.");
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
@@ -139,22 +140,7 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     // Обираємо випадковий токен
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
     
-    // РОБИМО ТЕСТ НА СУМІСНІСТЬ З JUPITER (Щоб не питати ШІ дарма)
-    try {
-        const testQuote = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
-        const testData = await testQuote.json();
-        
-        if (testData.error) {
-             throw new Error("Jupiter не підтримує цю монету.");
-        }
-    } catch (e) {
-        logs.actions.push(`Токен ${targetToken.baseToken.symbol} не підтримується Jupiter. Шукаю інший наступного разу.`);
-        const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
-        await sendTelegramMessage(reportText);
-        return res.status(200).json(logs);
-    }
-
-    // ЯКЩО JUPITER ДАВ ДОБРО - ЗАПИТУЄМО ШІ
+    // Одразу питаємо ШІ (без непотрібних тестів Jupiter)
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -173,10 +159,23 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
         try {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
-            // Запитуємо котирування ще раз для самої транзакції
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
+            // Налаштовуємо таймаут 10 секунд
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+            // ЗАПИТ КОТИРУВАННЯ: Використовуємо slippageBps=1000 (10%) для мемкоінів
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (!quoteRes.ok) {
+                 throw new Error(`Jupiter відмовив: ${quoteRes.status}. (Зазвичай це через недостатню ліквідність для великих об'ємів).`);
+            }
+            
             const quoteData = await quoteRes.json();
             
+            if (quoteData.error) throw new Error(quoteData.error);
+
+            // ЗАПИТ SWAP (Обмін): ДОДАЄМО dynamicSlippage ДЛЯ БЕЗПЕКИ
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -186,11 +185,11 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                     wrapAndUnwrapSol: true,
                     dynamicComputeUnitLimit: true,
                     prioritizationFeeLamports: "auto",
-                    dynamicSlippage: { maxBps: 1000 }
+                    dynamicSlippage: { maxBps: 1000 } // Дозволяє Jupiter гнучко підлаштуватись під волатильність
                 })
             });
             
-            if (!swapRes.ok) throw new Error("Не вдалося створити Swap-транзакцію");
+            if (!swapRes.ok) throw new Error("Jupiter не зміг згенерувати Swap-транзакцію.");
 
             const { swapTransaction } = await swapRes.json();
 
@@ -205,7 +204,11 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
             
             logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
-             logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
+             if (err.name === 'AbortError') {
+                 logs.actions.push(`\n❌ Помилка: Сервер Jupiter не відповів за 10 секунд. Спробую інший токен.`);
+             } else {
+                 logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
+             }
         }
     }
 
