@@ -48,18 +48,19 @@ export default async function handler(req, res) {
     // ==========================================
     logs.actions.push("🔍 <b>Перевірка портфеля:</b>");
     
-    const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
+      const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
-    let hasTokensToSell = false;
+    let tokenCount = 0; // Рахуємо, скільки різних токенів вже є в портфелі
 
     for (const acc of accounts.value) {
       const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
       const mintAddress = acc.account.data.parsed.info.mint;
       
+      // Перевіряємо тільки ті токени, яких більше нуля і це не SOL
       if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
-        hasTokensToSell = true;
+        tokenCount++; 
         
         const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
         const dexData = await dexRes.json();
@@ -74,13 +75,13 @@ export default async function handler(req, res) {
                 try {
                     const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`, {
                         method: 'GET',
-                        headers: jupHeaders // Додаємо ключ сюди
+                        headers: jupHeaders
                     });
                     const quoteData = await quoteRes.json();
 
                     const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                         method: 'POST',
-                        headers: jupHeaders, // Додаємо ключ сюди
+                        headers: jupHeaders,
                         body: JSON.stringify({ 
                             quoteResponse: quoteData, 
                             userPublicKey: wallet.publicKey.toString(),
@@ -100,12 +101,9 @@ export default async function handler(req, res) {
                     const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 5 });
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
-                    const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
-                    await sendTelegramMessage(reportText);
-                    return res.status(200).json(logs); 
-
+                    tokenCount--; // Зменшуємо лічильник, бо щойно продали токен
                 } catch (err) {
-                    logs.actions.push(`❌ Помилка продажу: ${err.message}`);
+                    logs.actions.push(`❌ Помилка продажу ${pair.baseToken.symbol}: ${err.message}`);
                 }
             } else {
                 logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). Зміна: ${change24h}%`);
@@ -113,6 +111,7 @@ export default async function handler(req, res) {
         }
       }
     }
+
 
     if (hasTokensToSell) {
         logs.actions.push("\n⏸ В гаманці є активи. Нові покупки призупинено.");
