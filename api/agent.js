@@ -28,8 +28,8 @@ export default async function handler(req, res) {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const groqKey = process.env.GROQ_API_KEY;
     const jupiterKey = process.env.JUPITER_API_KEY; 
-    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
-    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+        const redisUrl = process.env.KV_REST_API_URL;
+    const redisToken = process.env.KV_REST_API_TOKEN;
     
     if (!privateKey || !groqKey || !jupiterKey || !redisUrl || !redisToken) {
         throw new Error("Не вистачає ключів Solana, Groq, Jupiter або Redis у Vercel!");
