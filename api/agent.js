@@ -172,7 +172,8 @@ export default async function handler(req, res) {
             }
             
             if (!quoteRes || !quoteRes.ok) {
-                 throw new Error(`Jupiter відмовив (можливо, недостатньо ліквідності).`);
+    const errorText = quoteRes ? await quoteRes.text() : 'Немає відповіді від сервера';
+    throw new Error(`Jupiter відмовив: ${errorText}`);
             }
             
             const quoteData = await quoteRes.json();
