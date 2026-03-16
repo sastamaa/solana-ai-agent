@@ -48,7 +48,7 @@ export default async function handler(req, res) {
     const solMint = "So11111111111111111111111111111111111111112";
 
     // ==========================================
-    // СТАДІЯ 1: МЕНЕДЖЕР ПОРТФЕЛЯ (ПЕРЕВІРКА І ПРОДАЖ)
+    // СТАДІЯ 1: МЕНЕДЖЕР ПОРТФЕЛЯ (TRAILING STOP-LOSS)
     // ==========================================
     logs.actions.push("🔍 <b>Перевірка портфеля:</b>");
     
@@ -73,22 +73,52 @@ export default async function handler(req, res) {
             const pair = dexData.pairs[0];
             const currentPrice = parseFloat(pair.priceUsd);
             
-            const dbKey = `buy_price_${mintAddress}`;
-            let buyPrice = await redis.get(dbKey);
+            // Дістаємо ціну покупки і максимальну ціну з Бази
+            const buyKey = `buy_price_${mintAddress}`;
+            const maxKey = `max_price_${mintAddress}`;
             
-            let profitPercent = 0;
+            let buyPrice = await redis.get(buyKey);
+            let maxPrice = await redis.get(maxKey);
+            
             let displayProfit = "Невідомо (куплено раніше)";
+            let shouldSell = false;
+            let sellReason = "";
 
             if (buyPrice) {
-                profitPercent = ((currentPrice - buyPrice) / buyPrice) * 100;
-                displayProfit = `${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%`;
+                // Якщо токен виріс, оновлюємо максимальну ціну
+                if (!maxPrice || currentPrice > maxPrice) {
+                    await redis.set(maxKey, currentPrice);
+                    maxPrice = currentPrice;
+                }
+
+                const profitPercent = ((currentPrice - buyPrice) / buyPrice) * 100;
+                const dropFromMax = ((maxPrice - currentPrice) / maxPrice) * 100; // Падіння від піку
+                
+                displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% | Відкат: -${dropFromMax.toFixed(2)}%`;
+
+                // УМОВИ ПРОДАЖУ:
+                // 1. Токен впав на 15% від свого абсолютного максимуму (Trailing Stop)
+                // 2. АБО токен одразу після покупки впав на 20% (Stop Loss)
+                if (maxPrice > buyPrice && dropFromMax >= 15) {
+                    shouldSell = true;
+                    sellReason = "Спрацював Trailing Stop";
+                } else if (profitPercent <= -20) {
+                    shouldSell = true;
+                    sellReason = "Спрацював Stop Loss (-20%)";
+                }
+
             } else {
-                profitPercent = pair.priceChange.h24;
-                displayProfit = `${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
+                // Старий метод для токенів, які вже були куплені до створення бази
+                const profitPercent = pair.priceChange.h24;
+                displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
+                if (profitPercent >= 30 || profitPercent <= -20) {
+                    shouldSell = true;
+                    sellReason = profitPercent >= 30 ? "Досягнуто +30% за 24г" : "Падіння більше -20% за 24г";
+                }
             }
             
-            if (profitPercent >= 30 || profitPercent <= -20) {
-                logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Твій PnL: ${displayProfit}`);
+            if (shouldSell) {
+                logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! \nПричина: ${sellReason}\nТвій ${displayProfit}`);
                 
                 try {
                     const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`, {
@@ -119,7 +149,10 @@ export default async function handler(req, res) {
                     const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 5 });
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
-                    await redis.del(dbKey);
+                    
+                    // Очищаємо базу від цього токена
+                    await redis.del(buyKey);
+                    await redis.del(maxKey);
                     
                     tokenCount--; 
                     soldSomething = true;
@@ -127,7 +160,7 @@ export default async function handler(req, res) {
                     logs.actions.push(`❌ Помилка продажу ${pair.baseToken.symbol}: ${err.message}`);
                 }
             } else {
-                logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). Твій PnL: ${displayProfit}`);
+                logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). \n${displayProfit}`);
             }
         }
       }
@@ -145,14 +178,12 @@ export default async function handler(req, res) {
     const solBalance = await connection.getBalance(wallet.publicKey);
     const solBalanceUi = solBalance / 1e9; 
     
-    // Бот бере 25% від твого балансу
     let tradeAmountUi = parseFloat((solBalanceUi * 0.25).toFixed(3));
     
-    // Ліміти: не менше 0.01 SOL і не більше 0.5 SOL за одну угоду
     if (tradeAmountUi < 0.01) tradeAmountUi = 0.01;
     if (tradeAmountUi > 0.5) tradeAmountUi = 0.5;
 
-    const reserveSol = 0.012; // Мінімум для оплати комісій мережі
+    const reserveSol = 0.012; 
     const canAfford = (solBalanceUi - tradeAmountUi) >= reserveSol;
     
     if (tokenCount >= 3 || !canAfford) {
@@ -251,8 +282,10 @@ export default async function handler(req, res) {
             
             let txid = await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 5 });
             
+            // ЗАПИСУЄМО ЦІНУ І МАКСИМУМ В БАЗУ ДАНИХ
             const currentPriceToSave = parseFloat(targetToken.priceUsd);
             await redis.set(`buy_price_${targetToken.baseToken.address}`, currentPriceToSave);
+            await redis.set(`max_price_${targetToken.baseToken.address}`, currentPriceToSave);
 
             logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено ${tradeAmountUi} SOL. Ціна входу: $${currentPriceToSave}\nTX: https://solscan.io/tx/${txid}`);
             
