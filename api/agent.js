@@ -154,28 +154,22 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
     
     logs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 Аналіз ШІ: ${aiDecision}`);
 
-    // Якщо ШІ каже BUY
+       // Якщо ШІ каже BUY
     if (aiDecision.includes("BUY")) {
         try {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
-            // Налаштовуємо таймаут 10 секунд
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-            // ЗАПИТ КОТИРУВАННЯ: Використовуємо slippageBps=1000 (10%) для мемкоінів
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            // ЗАПИТ КОТИРУВАННЯ: Без таймаутів, з нормальним прослизанням 10%
+            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
             
             if (!quoteRes.ok) {
-                 throw new Error(`Jupiter відмовив: ${quoteRes.status}. (Зазвичай це через недостатню ліквідність для великих об'ємів).`);
+                 throw new Error(`Jupiter відмовив у котируванні (Статус: ${quoteRes.status})`);
             }
             
             const quoteData = await quoteRes.json();
-            
             if (quoteData.error) throw new Error(quoteData.error);
 
-            // ЗАПИТ SWAP (Обмін): ДОДАЄМО dynamicSlippage ДЛЯ БЕЗПЕКИ
+            // ЗАПИТ SWAP (Обмін): Без таймаутів!
             const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -185,11 +179,11 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
                     wrapAndUnwrapSol: true,
                     dynamicComputeUnitLimit: true,
                     prioritizationFeeLamports: "auto",
-                    dynamicSlippage: { maxBps: 1000 } // Дозволяє Jupiter гнучко підлаштуватись під волатильність
+                    dynamicSlippage: { maxBps: 1000 }
                 })
             });
             
-            if (!swapRes.ok) throw new Error("Jupiter не зміг згенерувати Swap-транзакцію.");
+            if (!swapRes.ok) throw new Error(`Jupiter не зміг згенерувати Swap (Статус: ${swapRes.status})`);
 
             const { swapTransaction } = await swapRes.json();
 
@@ -204,11 +198,7 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
             
             logs.actions.push(`\n✅ <b>УСПІШНО КУПЛЕНО!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
         } catch (err) {
-             if (err.name === 'AbortError') {
-                 logs.actions.push(`\n❌ Помилка: Сервер Jupiter не відповів за 10 секунд. Спробую інший токен.`);
-             } else {
-                 logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
-             }
+             logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
         }
     }
 
