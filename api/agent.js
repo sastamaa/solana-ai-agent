@@ -1,6 +1,7 @@
 import { Connection, Keypair, VersionedTransaction, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import fetch from 'node-fetch';
+import { Redis } from '@upstash/redis';
 
 export const maxDuration = 60;
 
@@ -27,10 +28,18 @@ export default async function handler(req, res) {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const groqKey = process.env.GROQ_API_KEY;
     const jupiterKey = process.env.JUPITER_API_KEY; 
+    const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
     
-    if (!privateKey || !groqKey || !jupiterKey) {
-        throw new Error("Не вистачає ключів Solana, Groq або Jupiter у Vercel!");
+    if (!privateKey || !groqKey || !jupiterKey || !redisUrl || !redisToken) {
+        throw new Error("Не вистачає ключів Solana, Groq, Jupiter або Redis у Vercel!");
     }
+
+    // Підключаємо Базу Даних
+    const redis = new Redis({
+      url: redisUrl,
+      token: redisToken,
+    });
     
     const jupHeaders = {
         'Content-Type': 'application/json',
@@ -51,8 +60,8 @@ export default async function handler(req, res) {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
-    let tokenCount = 0; // Рахуємо, скільки різних токенів вже є в портфелі
-    let soldSomething = false; // Прапорець, якщо ми щось продали в цьому циклі
+    let tokenCount = 0; 
+    let soldSomething = false; 
 
     for (const acc of accounts.value) {
       const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
@@ -66,10 +75,28 @@ export default async function handler(req, res) {
         
         if (dexData.pairs && dexData.pairs.length > 0) {
             const pair = dexData.pairs[0];
-            const change24h = pair.priceChange.h24;
+            const currentPrice = parseFloat(pair.priceUsd);
             
-            if (change24h >= 20 || change24h <= -10) {
-                logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Зміна ціни: ${change24h}%`);
+            // Дістаємо ціну покупки з Бази Даних
+            const dbKey = `buy_price_${mintAddress}`;
+            let buyPrice = await redis.get(dbKey);
+            
+            let profitPercent = 0;
+            let displayProfit = "Невідомо (куплено раніше)";
+
+            if (buyPrice) {
+                // Рахуємо РЕАЛЬНИЙ прибуток
+                profitPercent = ((currentPrice - buyPrice) / buyPrice) * 100;
+                displayProfit = `${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}%`;
+            } else {
+                // Якщо токен був куплений до створення бази, дивимось на графік (старий метод)
+                profitPercent = pair.priceChange.h24;
+                displayProfit = `${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
+            }
+            
+            // УМОВА ПРОДАЖУ: +20% прибутку або -10% збитку (Stop Loss)
+            if (profitPercent >= 20 || profitPercent <= -10) {
+                logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! Твій PnL: ${displayProfit}`);
                 
                 try {
                     const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`, {
@@ -100,31 +127,31 @@ export default async function handler(req, res) {
                     const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 5 });
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
-                    tokenCount--; // Зменшуємо лічильник, бо щойно продали токен
+                    
+                    // Видаляємо токен з Бази Даних після продажу
+                    await redis.del(dbKey);
+                    
+                    tokenCount--; 
                     soldSomething = true;
                 } catch (err) {
                     logs.actions.push(`❌ Помилка продажу ${pair.baseToken.symbol}: ${err.message}`);
                 }
             } else {
-                logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). Зміна: ${change24h}%`);
+                logs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо (HOLD). Твій PnL: ${displayProfit}`);
             }
         }
       }
     }
 
-    // Якщо ми щойно продали токен, краще завершити цикл і почекати 5 хв до наступного запуску, 
-    // щоб баланс SOL встиг оновитися в блокчейні.
     if (soldSomething) {
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs); 
     }
 
-    // Перевіряємо баланс SOL для нових покупок
     const solBalance = await connection.getBalance(wallet.publicKey);
     const solBalanceUi = solBalance / 1e9; 
     
-    // Бот не купуватиме нові монети, якщо в гаманці вже 3 токени або залишилося менше 0.03 SOL
     if (tokenCount >= 3 || solBalanceUi < 0.03) {
         logs.actions.push(`\n⏸ Нові покупки призупинено. В портфелі токенів: ${tokenCount}/3. Вільний баланс: ${solBalanceUi.toFixed(3)} SOL.`);
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
@@ -157,7 +184,7 @@ export default async function handler(req, res) {
     }
 
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
-const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Зміна за 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Якщо зміна більше 40% - це занадто пізно, пиши "WAIT". Напиши "BUY", тільки якщо зміна від 0% до 25% і бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
+    const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Зміна за 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Якщо зміна більше 30% - це занадто пізно, пиши "WAIT". Напиши "BUY", тільки якщо зміна від 0% до 25% і бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -177,7 +204,6 @@ const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseT
             let quoteRes;
             for (let i = 0; i < 3; i++) {
                 try {
-                    // Сума покупки: 20000000 лампортів = 0.02 SOL
                     quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`, {
                         method: 'GET',
                         headers: jupHeaders 
@@ -219,7 +245,12 @@ const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseT
             const rawTransaction = transaction.serialize();
             
             let txid = await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 5 });
-            logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL.\nTX: https://solscan.io/tx/${txid}`);
+            
+            // ЗАПИСУЄМО ЦІНУ ПОКУПКИ В БАЗУ ДАНИХ!
+            const currentPriceToSave = parseFloat(targetToken.priceUsd);
+            await redis.set(`buy_price_${targetToken.baseToken.address}`, currentPriceToSave);
+
+            logs.actions.push(`\n✅ <b>ТРАНЗАКЦІЯ ВІДПРАВЛЕНА!</b> Потрачено 0.02 SOL. Ціна входу: $${currentPriceToSave}\nTX: https://solscan.io/tx/${txid}`);
             
         } catch (err) {
              logs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
