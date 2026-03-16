@@ -165,7 +165,7 @@ export default async function handler(req, res) {
 let quoteRes;
 for (let i = 0; i < 3; i++) {
     try {
-        quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
+        quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=10000000&slippageBps=1000`);
         if (quoteRes.ok) break; // Якщо успішно, виходимо з циклу
     } catch (e) {
         if (i === 2) throw new Error(`Не вдалося з'єднатися з Jupiter після 3 спроб: ${e.message}`);
