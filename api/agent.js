@@ -162,8 +162,16 @@ export default async function handler(req, res) {
             logs.actions.push(`⏳ Створюю транзакцію для ${targetToken.baseToken.symbol}...`);
             
             // Котирування (10% прослизання)
-            const quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
-            
+let quoteRes;
+for (let i = 0; i < 3; i++) {
+    try {
+        quoteRes = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`);
+        if (quoteRes.ok) break; // Якщо успішно, виходимо з циклу
+    } catch (e) {
+        if (i === 2) throw new Error(`Не вдалося з'єднатися з Jupiter після 3 спроб: ${e.message}`);
+        await new Promise(res => setTimeout(res, 1000)); // Чекаємо 1 секунду перед наступною спробою
+    }
+}            
             if (!quoteRes.ok) {
                  throw new Error(`Jupiter відмовив: ${quoteRes.status}. (Недостатньо ліквідності).`);
             }
