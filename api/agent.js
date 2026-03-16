@@ -26,13 +26,12 @@ export default async function handler(req, res) {
   try {
     const privateKey = process.env.SOLANA_PRIVATE_KEY;
     const groqKey = process.env.GROQ_API_KEY;
-    const jupiterKey = process.env.JUPITER_API_KEY; // НОВИЙ КЛЮЧ JUPITER
+    const jupiterKey = process.env.JUPITER_API_KEY; 
     
     if (!privateKey || !groqKey || !jupiterKey) {
         throw new Error("Не вистачає ключів Solana, Groq або Jupiter у Vercel!");
     }
     
-    // Створюємо "перепустку" для Jupiter
     const jupHeaders = {
         'Content-Type': 'application/json',
         'x-api-key': jupiterKey
@@ -48,17 +47,17 @@ export default async function handler(req, res) {
     // ==========================================
     logs.actions.push("🔍 <b>Перевірка портфеля:</b>");
     
-      const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
+    const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
       programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
     });
 
     let tokenCount = 0; // Рахуємо, скільки різних токенів вже є в портфелі
+    let soldSomething = false; // Прапорець, якщо ми щось продали в цьому циклі
 
     for (const acc of accounts.value) {
       const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
       const mintAddress = acc.account.data.parsed.info.mint;
       
-      // Перевіряємо тільки ті токени, яких більше нуля і це не SOL
       if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
         tokenCount++; 
         
@@ -102,6 +101,7 @@ export default async function handler(req, res) {
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
                     tokenCount--; // Зменшуємо лічильник, бо щойно продали токен
+                    soldSomething = true;
                 } catch (err) {
                     logs.actions.push(`❌ Помилка продажу ${pair.baseToken.symbol}: ${err.message}`);
                 }
@@ -112,9 +112,21 @@ export default async function handler(req, res) {
       }
     }
 
+    // Якщо ми щойно продали токен, краще завершити цикл і почекати 5 хв до наступного запуску, 
+    // щоб баланс SOL встиг оновитися в блокчейні.
+    if (soldSomething) {
+        const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n\n');
+        await sendTelegramMessage(reportText);
+        return res.status(200).json(logs); 
+    }
 
-    if (hasTokensToSell) {
-        logs.actions.push("\n⏸ В гаманці є активи. Нові покупки призупинено.");
+    // Перевіряємо баланс SOL для нових покупок
+    const solBalance = await connection.getBalance(wallet.publicKey);
+    const solBalanceUi = solBalance / 1e9; 
+    
+    // Бот не купуватиме нові монети, якщо в гаманці вже 3 токени або залишилося менше 0.03 SOL
+    if (tokenCount >= 3 || solBalanceUi < 0.03) {
+        logs.actions.push(`\n⏸ Нові покупки призупинено. В портфелі токенів: ${tokenCount}/3. Вільний баланс: ${solBalanceUi.toFixed(3)} SOL.`);
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
@@ -123,7 +135,7 @@ export default async function handler(req, res) {
     // ==========================================
     // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
     // ==========================================
-    logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
+    logs.actions.push("\n🎯 <b>Режим Снайпера (Шукаю новий токен):</b>");
     
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
@@ -165,9 +177,10 @@ export default async function handler(req, res) {
             let quoteRes;
             for (let i = 0; i < 3; i++) {
                 try {
+                    // Сума покупки: 20000000 лампортів = 0.02 SOL
                     quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${targetToken.baseToken.address}&amount=20000000&slippageBps=1000`, {
                         method: 'GET',
-                        headers: jupHeaders // Додаємо ключ
+                        headers: jupHeaders 
                     });
                     if (quoteRes.ok) break; 
                 } catch (e) {
@@ -186,7 +199,7 @@ export default async function handler(req, res) {
 
             const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                 method: 'POST',
-                headers: jupHeaders, // Додаємо ключ
+                headers: jupHeaders, 
                 body: JSON.stringify({ 
                     quoteResponse: quoteData, 
                     userPublicKey: wallet.publicKey.toString(),
