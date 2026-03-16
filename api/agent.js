@@ -111,36 +111,43 @@ const swapRes = await fetch('https://quote-api.jup.ag/v6/swap', {
         return res.status(200).json(logs);
     }
 
-    // ==========================================
+     // ==========================================
     // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
     // ==========================================
     logs.actions.push("\n🎯 <b>Режим Снайпера (Гаманець чистий):</b>");
     
-    // Шукаємо активні токени
+    // 1. Отримуємо список ПЕРЕВІРЕНИХ токенів від самого Jupiter (Strict List)
+    const jupTokensRes = await fetch('https://tokens.jup.ag/tokens?tags=verified');
+    const jupTokens = await jupTokensRes.json();
+    // Робимо зручний список адрес для швидкого пошуку
+    const validAddresses = new Set(jupTokens.map(t => t.address));
+
+    // 2. Шукаємо активні токени на Dexscreener
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
-    // Фільтруємо безпечні токени
-  const activePairs = searchData.pairs.filter(p => 
-    p.chainId === 'solana' && 
-    p.volume && p.volume.h24 > 50000 && 
-    p.liquidity && p.liquidity.usd > 50000 && // Тільки великі, стабільні пули, які бачить Jupiter
-    p.baseToken.symbol !== 'SOL' && 
-    p.baseToken.symbol !== 'WSOL' && 
-    p.baseToken.symbol !== 'USDC'
-);
+    // 3. ФІЛЬТРУЄМО: тільки ті токени, які ТОЧНО є в Jupiter
+    const activePairs = searchData.pairs.filter(p => 
+        p.chainId === 'solana' && 
+        p.volume && p.volume.h24 > 50000 && 
+        p.liquidity && p.liquidity.usd > 20000 && 
+        p.baseToken.symbol !== 'SOL' && 
+        p.baseToken.symbol !== 'WSOL' && 
+        p.baseToken.symbol !== 'USDC' &&
+        validAddresses.has(p.baseToken.address) // НАЙГОЛОВНІША УМОВА: Токен має бути в базі Jupiter
+    );
     
     if (activePairs.length === 0) {
-        logs.actions.push("Ринок порожній. Нічого безпечного не знайдено.");
+        logs.actions.push("Ринок порожній. Жодного безпечного токена, підтримуваного Jupiter, не знайдено.");
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
     }
 
-    // Обираємо випадковий з ТОП-5
-    const targetToken = activePairs[Math.floor(Math.random() * Math.min(5, activePairs.length))];
+    // Обираємо випадковий з підходящих
+    const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
     
-    // Запит до Groq ШІ
+    // Далі йде запит до ШІ (Залишай код Groq без змін)
     const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Ціна: $${targetToken.priceUsd}. Зміна: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Напиши "BUY", якщо бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
