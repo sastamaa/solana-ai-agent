@@ -123,10 +123,10 @@ export default async function handler(req, res) {
     const searchData = await searchRes.json();
     
     // Фільтруємо безпечні токени
-   const activePairs = searchData.pairs.filter(p => 
+  const activePairs = searchData.pairs.filter(p => 
     p.chainId === 'solana' && 
-    p.volume && p.volume.h24 > 10000 && // знизив поріг об'єму для нових монет
-    p.liquidity && p.liquidity.usd > 5000 && 
+    p.volume && p.volume.h24 > 50000 && 
+    p.liquidity && p.liquidity.usd > 50000 && // Тільки великі, стабільні пули, які бачить Jupiter
     p.baseToken.symbol !== 'SOL' && 
     p.baseToken.symbol !== 'WSOL' && 
     p.baseToken.symbol !== 'USDC'
