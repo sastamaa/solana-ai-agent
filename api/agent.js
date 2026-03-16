@@ -73,7 +73,6 @@ export default async function handler(req, res) {
             const pair = dexData.pairs[0];
             const currentPrice = parseFloat(pair.priceUsd);
             
-            // Дістаємо ціну покупки і максимальну ціну з Бази
             const buyKey = `buy_price_${mintAddress}`;
             const maxKey = `max_price_${mintAddress}`;
             
@@ -85,20 +84,16 @@ export default async function handler(req, res) {
             let sellReason = "";
 
             if (buyPrice) {
-                // Якщо токен виріс, оновлюємо максимальну ціну
                 if (!maxPrice || currentPrice > maxPrice) {
                     await redis.set(maxKey, currentPrice);
                     maxPrice = currentPrice;
                 }
 
                 const profitPercent = ((currentPrice - buyPrice) / buyPrice) * 100;
-                const dropFromMax = ((maxPrice - currentPrice) / maxPrice) * 100; // Падіння від піку
+                const dropFromMax = ((maxPrice - currentPrice) / maxPrice) * 100; 
                 
                 displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% | Відкат: -${dropFromMax.toFixed(2)}%`;
 
-                // УМОВИ ПРОДАЖУ:
-                // 1. Токен впав на 15% від свого абсолютного максимуму (Trailing Stop)
-                // 2. АБО токен одразу після покупки впав на 20% (Stop Loss)
                 if (maxPrice > buyPrice && dropFromMax >= 15) {
                     shouldSell = true;
                     sellReason = "Спрацював Trailing Stop";
@@ -108,7 +103,6 @@ export default async function handler(req, res) {
                 }
 
             } else {
-                // Старий метод для токенів, які вже були куплені до створення бази
                 const profitPercent = pair.priceChange.h24;
                 displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
                 if (profitPercent >= 30 || profitPercent <= -20) {
@@ -150,7 +144,6 @@ export default async function handler(req, res) {
                     
                     logs.actions.push(`✅ Успішно продано! \nTX: https://solscan.io/tx/${txid}`);
                     
-                    // Очищаємо базу від цього токена
                     await redis.del(buyKey);
                     await redis.del(maxKey);
                     
@@ -196,24 +189,28 @@ export default async function handler(req, res) {
     const tradeAmountLamports = Math.floor(tradeAmountUi * 1e9);
 
     // ==========================================
-    // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА)
+    // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА + АНТИСКАМ)
     // ==========================================
-    logs.actions.push("\n🎯 <b>Режим Снайпера (Шукаю новий токен):</b>");
+    logs.actions.push("\n🎯 <b>Режим Снайпера (Шукаю безпечний токен):</b>");
     
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
+    // ФІЛЬТР ВІКУ: Токену має бути більше 2 годин (7200000 мілісекунд)
+    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+
     const activePairs = searchData.pairs.filter(p => 
         p.chainId === 'solana' && 
         p.volume && p.volume.h24 > 50000 && 
         p.liquidity && p.liquidity.usd > 50000 && 
         p.baseToken.symbol !== 'SOL' && 
         p.baseToken.symbol !== 'WSOL' && 
-        p.baseToken.symbol !== 'USDC'
+        p.baseToken.symbol !== 'USDC' &&
+        p.pairCreatedAt && p.pairCreatedAt < twoHoursAgo // <-- ОСЬ ВІН, ЗАХИСТ ВІД СКАМУ!
     );
     
     if (activePairs.length === 0) {
-        logs.actions.push("Ринок порожній. Нічого безпечного не знайдено.");
+        logs.actions.push("На ринку немає безпечних токенів (всі занадто нові або без ліквідності). Чекаю.");
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
@@ -282,7 +279,6 @@ export default async function handler(req, res) {
             
             let txid = await connection.sendRawTransaction(rawTransaction, { skipPreflight: true, maxRetries: 5 });
             
-            // ЗАПИСУЄМО ЦІНУ І МАКСИМУМ В БАЗУ ДАНИХ
             const currentPriceToSave = parseFloat(targetToken.priceUsd);
             await redis.set(`buy_price_${targetToken.baseToken.address}`, currentPriceToSave);
             await redis.set(`max_price_${targetToken.baseToken.address}`, currentPriceToSave);
