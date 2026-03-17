@@ -199,36 +199,42 @@ export default async function handler(req, res) {
 
     const tradeAmountLamports = Math.floor(tradeAmountUi * 1e9);
 
+     // ==========================================
+    // СТАДІЯ 2: СНАЙПЕР (АГРЕСИВНИЙ ПОШУК ТРЕНДІВ)
     // ==========================================
-    // СТАДІЯ 2: СНАЙПЕР (КУПІВЛЯ НОВОГО ТОКЕНА + АНТИСКАМ)
-    // ==========================================
-    logs.actions.push("\n🎯 <b>Режим Снайпера (Шукаю безпечний токен):</b>");
+    logs.actions.push("\n🎯 <b>Режим Снайпера (Шукаю вибуховий токен):</b>");
     
     const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
     const searchData = await searchRes.json();
     
-    // ФІЛЬТР ВІКУ: Токену має бути більше 2 годин (7200000 мілісекунд)
-    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+    // Зменшили фільтр віку до 30 хвилин (замість 2 годин), щоб ловити свіжі тренди
+    const thirtyMinsAgo = Date.now() - (30 * 60 * 1000);
 
     const activePairs = searchData.pairs.filter(p => 
         p.chainId === 'solana' && 
-        p.volume && p.volume.h24 > 50000 && 
-        p.liquidity && p.liquidity.usd > 50000 && 
+        p.volume && p.volume.h24 > 100000 && // Збільшили вимогу до об'єму для надійності
+        p.liquidity && p.liquidity.usd > 30000 && 
+        p.fdv && p.fdv < 2000000 && // Фільтр капіталізації: шукаємо "легкі" токени до $2 млн
         p.baseToken.symbol !== 'SOL' && 
         p.baseToken.symbol !== 'WSOL' && 
         p.baseToken.symbol !== 'USDC' &&
-        p.pairCreatedAt && p.pairCreatedAt < twoHoursAgo // <-- ОСЬ ВІН, ЗАХИСТ ВІД СКАМУ!
+        p.pairCreatedAt && p.pairCreatedAt < thirtyMinsAgo 
     );
     
     if (activePairs.length === 0) {
-        logs.actions.push("На ринку немає безпечних токенів (всі занадто нові або без ліквідності). Чекаю.");
+        logs.actions.push("На ринку немає безпечних і перспективних токенів. Чекаю.");
         const reportText = `🤖 <b>Звіт Агента:</b>\n\n` + logs.actions.join('\n');
         await sendTelegramMessage(reportText);
         return res.status(200).json(logs);
     }
 
     const targetToken = activePairs[Math.floor(Math.random() * activePairs.length)];
-    const prompt = `Ти трейдер на Solana. Токен: ${targetToken.baseToken.symbol}. Зміна за 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Якщо зміна більше 30% - це занадто пізно, пиши "WAIT". Напиши "BUY", тільки якщо зміна від 0% до 25% і бачиш потенціал росту. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
+    
+    // Новий промпт для ШІ: дозволяємо купувати сильно зростаючі монети
+    const prompt = `Ти професійний крипто-снайпер на Solana. Токен: ${targetToken.baseToken.symbol}. 
+    Зміна за 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Капіталізація (FDV): $${targetToken.fdv}. 
+    Якщо зміна більше 150% - це занадто пізно, пиши "WAIT". 
+    Напиши "BUY", якщо бачиш сильний бичачий тренд (зміна від 10% до 100%) і об'єм торгів підтверджує інтерес натовпу. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
