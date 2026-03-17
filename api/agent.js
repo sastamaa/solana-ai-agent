@@ -103,7 +103,7 @@ export default async function handler(req, res) {
                     // 2. Trailing Stop: якщо ціна впала на 8% від максимуму
                     shouldSell = true;
                     sellReason = "Спрацював Trailing Stop (-8% від піку)";
-                } else if (profitPercent <= -15) {
+                } else if (profitPercent <= -5) {
                     // 3. Зменшений Stop-Loss: продаємо, якщо впало на 15% від покупки
                     shouldSell = true;
                     sellReason = "Спрацював Stop Loss (-15%)";
@@ -115,7 +115,7 @@ export default async function handler(req, res) {
                 displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
                 
                 // Знизили поріг жадібності до 15%
-                if (profitPercent >= 15 || profitPercent <= -15) {
+                if (profitPercent >= 15 || profitPercent <= -5) {
                     shouldSell = true;
                     sellReason = profitPercent >= 15 ? "Досягнуто +15% за 24г" : "Падіння більше -15% за 24г";
                 }
