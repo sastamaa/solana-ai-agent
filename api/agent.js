@@ -93,23 +93,34 @@ export default async function handler(req, res) {
                 const dropFromMax = ((maxPrice - currentPrice) / maxPrice) * 100; 
                 
                 displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% | Відкат: -${dropFromMax.toFixed(2)}%`;
-
-                if (maxPrice > buyPrice && dropFromMax >= 15) {
+              
+                // НОВІ УМОВИ ПРОДАЖУ ДЛЯ ТОКЕНІВ З БАЗИ:
+                if (profitPercent >= 35) {
+                    // 1. Жорсткий продаж при досягненні +35% (не чекаємо відкатів)
                     shouldSell = true;
-                    sellReason = "Спрацював Trailing Stop";
-                } else if (profitPercent <= -20) {
+                    sellReason = "Фіксація великого прибутку (+35%)";
+                } else if (maxPrice > buyPrice && dropFromMax >= 8) {
+                    // 2. Trailing Stop: якщо ціна впала на 8% від максимуму
                     shouldSell = true;
-                    sellReason = "Спрацював Stop Loss (-20%)";
+                    sellReason = "Спрацював Trailing Stop (-8% від піку)";
+                } else if (profitPercent <= -15) {
+                    // 3. Зменшений Stop-Loss: продаємо, якщо впало на 15% від покупки
+                    shouldSell = true;
+                    sellReason = "Спрацював Stop Loss (-15%)";
                 }
 
             } else {
+                // ДЛЯ СТАРИХ ТОКЕНІВ (як memecoin):
                 const profitPercent = pair.priceChange.h24;
                 displayProfit = `PnL: ${profitPercent > 0 ? '+' : ''}${profitPercent.toFixed(2)}% (За 24г)`;
-                if (profitPercent >= 30 || profitPercent <= -20) {
+                
+                // Знизили поріг жадібності до 15%
+                if (profitPercent >= 15 || profitPercent <= -15) {
                     shouldSell = true;
-                    sellReason = profitPercent >= 30 ? "Досягнуто +30% за 24г" : "Падіння більше -20% за 24г";
+                    sellReason = profitPercent >= 15 ? "Досягнуто +15% за 24г" : "Падіння більше -15% за 24г";
                 }
             }
+
             
             if (shouldSell) {
                 logs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! \nПричина: ${sellReason}\nТвій ${displayProfit}`);
