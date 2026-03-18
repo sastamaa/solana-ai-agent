@@ -106,8 +106,9 @@ export default async function handler(req, res) {
                             Volume 24h: $${vol}
                             Change 24h: ${pair.priceChange?.h24 || 0}%
                             Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high!`;
-                            // --- ВИПРАВЛЕНИЙ ЗАПИТ ДО GOOGLE GEMINI ---
-                            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+
+                            // --- ВИКОРИСТОВУЄМО НОВУ МОДЕЛЬ GEMINI 2.5 FLASH ---
+                            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
                                 method: 'POST', 
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ 
@@ -117,18 +118,16 @@ export default async function handler(req, res) {
                                     }] 
                                 })
                             });
-
                             
                             const geminiData = await geminiRes.json();
                             
-                            // ДІАГНОСТИКА ПОМИЛКИ
                             if (geminiData.error) {
                                 userLogs.actions.push(`⚠️ <b>Помилка Google API:</b> ${geminiData.error.message}`);
                                 break;
                             }
                             
                             if (!geminiData || !geminiData.candidates || !geminiData.candidates[0] || !geminiData.candidates[0].content) {
-                                userLogs.actions.push(`⚠️ <b>ШІ не дав відповіді.</b> Можливо, блокування контенту (Safety).`);
+                                userLogs.actions.push(`⚠️ <b>ШІ не дав відповіді.</b> Можливо, блокування контенту.`);
                                 break; 
                             }
                             
