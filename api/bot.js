@@ -224,7 +224,7 @@ export default async function handler(req, res) {
                     await redis.del(`state_${chatId}`);
                     await editMessage(chatId, messageId, t[l].welcome(userData.walletAddress, (0.05 * 180).toFixed(2)), getMainMenuKeyboard(l));
                 }
-                else if (data === 'portfolio') {
+                               else if (data === 'portfolio') {
                     await editMessage(chatId, messageId, "⏳ <i>Аналізую блокчейн...</i>", { inline_keyboard: [] });
                     const solPrice = await getSolPrice();
                     const balance = await connection.getBalance(new PublicKey(userData.walletAddress));
@@ -244,30 +244,42 @@ export default async function handler(req, res) {
                         for (const acc of accounts.value) {
                             const amountInfo = acc.account.data.parsed.info.tokenAmount;
                             const mint = acc.account.data.parsed.info.mint;
+                            
+                            // Показуємо ВСІ токени, окрім основної Solana, якщо їх кількість більше 0
                             if (amountInfo.uiAmount > 0 && mint !== solMint) {
                                 hasTokens = true;
                                 const buyPriceStr = await redis.get(`buy_price_${mint}_${chatId}`);
-                                let pnlInfo = "";
+                                let pnlInfo = "<i>Аналіз ціни...</i>";
+                                let tokenName = `${mint.substring(0, 4)}...${mint.slice(-4)}`; // За замовчуванням показуємо адресу
+                                
                                 try {
                                     const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
                                     const dexData = await dexRes.json();
                                     if (dexData.pairs && dexData.pairs.length > 0) {
-                                        const symbol = dexData.pairs[0].baseToken.symbol;
+                                        tokenName = dexData.pairs[0].baseToken.name || dexData.pairs[0].baseToken.symbol;
                                         const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
                                         const totalUsd = (amountInfo.uiAmount * currentPrice).toFixed(2);
+                                        
                                         if (buyPriceStr) {
                                             const buyPrice = parseFloat(buyPriceStr);
                                             const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                             const emoji = percentChange >= 0 ? "🟩" : "🟥";
                                             const sign = percentChange >= 0 ? "+" : "";
                                             pnlInfo = `${emoji} ${sign}${percentChange.toFixed(2)}% | ~$${totalUsd}`;
-                                        } else { pnlInfo = `~$${totalUsd}`; }
-                                        portfolioText += `🔸 <b>${symbol}:</b> ${amountInfo.uiAmount} шт.\n   └ PnL: ${pnlInfo}\n`;
+                                        } else { 
+                                            pnlInfo = `~$${totalUsd}`; 
+                                        }
                                     }
-                                } catch (e) {}
+                                } catch (e) {
+                                    // Якщо не вдалося завантажити ціну, залишаємо адресу замість імені
+                                }
+                                
+                                portfolioText += `🔸 <b>${tokenName}:</b> ${amountInfo.uiAmount} шт.\n   └ PnL: ${pnlInfo}\n`;
                             }
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        portfolioText += `⚠️ Помилка зчитування гаманця.\n`;
+                    }
                     
                     if (!hasTokens) portfolioText += `<i>Немає куплених токенів. ШІ шукає позицію.</i>\n`;
 
@@ -277,6 +289,7 @@ export default async function handler(req, res) {
                     ]};
                     await editMessage(chatId, messageId, portfolioText, portKeyboard);
                 }
+
                 else if (data === 'panic_sell') {
                     await editMessage(chatId, messageId, "⏳ <i>Selling all tokens...</i>", { inline_keyboard: [] });
                     const soldCount = await panicSellAll(chatId, userData.privateKey, t[l]);
