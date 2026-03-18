@@ -31,8 +31,7 @@ export default async function handler(req, res) {
     if (!groqKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys in Vercel settings!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
-    // Повертаємо стандартний безкоштовний вузол, щоб уникнути блокувань
-    const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
+    const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
     const solMint = "So11111111111111111111111111111111111111112"; 
     const jupHeaders = { 'Content-Type': 'application/json', 'x-api-key': jupiterKey };
 
@@ -61,7 +60,6 @@ export default async function handler(req, res) {
         let activeTokensCount = 0; 
 
         try {
-            // Читаємо баланс і токени (якщо тут помилка - ми її зловимо!)
             const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
             const balance = await connection.getBalance(wallet.publicKey);
             
@@ -74,7 +72,6 @@ export default async function handler(req, res) {
                 }
             }
 
-            // БЛОК ПОШУКУ ТА ПОКУПКИ
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
@@ -110,23 +107,19 @@ export default async function handler(req, res) {
                             Change 24h: ${pair.priceChange?.h24 || 0}%
                             Rule: You can answer only WAIT or BUY. Give 1 reason.`;
 
-                                          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                                 method: 'POST', headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ model: 'llama3-8b-8192', messages: [{ role: 'user', content: prompt }] })
                             });
                             
                             const groqData = await groqRes.json();
                             
-                            // БЕЗПЕЧНА ПЕРЕВІРКА ВІДПОВІДІ ШІ
                             if (!groqData || !groqData.choices || !groqData.choices[0]) {
-                                userLogs.actions.push(`⚠️ <b>ШІ (Groq) тимчасово перевантажений або відхилив запит.</b> Перевірка переноситься на наступний цикл.\n<i>(Можливо, перевищено ліміт безкоштовних запитів)</i>`);
+                                userLogs.actions.push(`⚠️ <b>ШІ (Groq) тимчасово перевантажений або відхилив запит.</b> Перевірка переноситься на наступний цикл.\n<i>(Ліміт безкоштовних запитів)</i>`);
                                 break; 
                             }
                             
                             const aiDecision = groqData.choices[0].message.content.trim();
-
-                            if (aiDecision.includes("BUY")) {
-
 
                             if (aiDecision.includes("BUY")) {
                                 const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${p.tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
@@ -159,7 +152,6 @@ export default async function handler(req, res) {
             }
 
         } catch (err) {
-            // ТЕПЕР МИ БАЧИМО ВСІ ПОМИЛКИ!
             userLogs.actions.push(`🚨 <b>КРИТИЧНА ПОМИЛКА БОТА:</b>\n<code>${err.message}</code>`);
         }
 
