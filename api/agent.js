@@ -15,20 +15,20 @@ async function sendTelegramMessage(chatId, text, botToken) {
 }
 
 const t = {
-    uk: { rep: "🤖 <b>Звіт Агента:</b>", wal: "💼 <b>Гаманець:</b>", buy: "✅ <b>КУПЛЕНО:</b>", sell: "✅ <b>ПРОДАНО:</b>", inst: "Ти агресивний крипто-снайпер. Дай коротку відповідь (1-2 речення) УКРАЇНСЬКОЮ мовою." },
-    en: { rep: "🤖 <b>Agent Report:</b>", wal: "💼 <b>Wallet:</b>", buy: "✅ <b>BOUGHT:</b>", sell: "✅ <b>SOLD:</b>", inst: "You are an aggressive crypto sniper. Give a short response (1-2 sentences) in ENGLISH." },
-    el: { rep: "🤖 <b>Αναφορά AI:</b>", wal: "💼 <b>Πορτοφόλι:</b>", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", inst: "Είστε ένας επιθετικός crypto sniper. Δώστε μια σύντομη απάντηση (1-2 προτάσεις) στα ΕΛΛΗΝΙΚΑ." }
+    uk: { rep: "🤖 <b>Звіт Агента:</b>", wal: "💼 <b>Гаманець:</b>", buy: "✅ <b>КУПЛЕНО:</b>", sell: "✅ <b>ПРОДАНО:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in UKRAINIAN." },
+    en: { rep: "🤖 <b>Agent Report:</b>", wal: "💼 <b>Wallet:</b>", buy: "✅ <b>BOUGHT:</b>", sell: "✅ <b>SOLD:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in ENGLISH." },
+    el: { rep: "🤖 <b>Αναφορά AI:</b>", wal: "💼 <b>Πορτοφόλι:</b>", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in GREEK." }
 };
 
 export default async function handler(req, res) {
   try {
-    const groqKey = process.env.GROQ_API_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY; // ТЕПЕР ВИКОРИСТОВУЄМО GEMINI
     const jupiterKey = process.env.JUPITER_API_KEY; 
     const redisUrl = process.env.KV_REST_API_URL;
     const redisToken = process.env.KV_REST_API_TOKEN;
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     
-    if (!groqKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys in Vercel settings!");
+    if (!geminiKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys (Check GEMINI_API_KEY)!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
     const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
@@ -105,21 +105,22 @@ export default async function handler(req, res) {
                             Liquidity: $${liq}
                             Volume 24h: $${vol}
                             Change 24h: ${pair.priceChange?.h24 || 0}%
-                            Rule: You can answer only WAIT or BUY. Give 1 reason.`;
+                            Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high!`;
 
-                            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                                method: 'POST', headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ model: 'llama3-8b-8192', messages: [{ role: 'user', content: prompt }] })
+                            // --- ЗАПИТ ДО GOOGLE GEMINI ---
+                            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
                             });
                             
-                            const groqData = await groqRes.json();
+                            const geminiData = await geminiRes.json();
                             
-                            if (!groqData || !groqData.choices || !groqData.choices[0]) {
-                                userLogs.actions.push(`⚠️ <b>ШІ (Groq) тимчасово перевантажений або відхилив запит.</b> Перевірка переноситься на наступний цикл.\n<i>(Ліміт безкоштовних запитів)</i>`);
+                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0]) {
+                                userLogs.actions.push(`⚠️ <b>Помилка ШІ.</b> Перевірка переноситься на наступний цикл.`);
                                 break; 
                             }
                             
-                            const aiDecision = groqData.choices[0].message.content.trim();
+                            const aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
 
                             if (aiDecision.includes("BUY")) {
                                 const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${p.tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
@@ -161,7 +162,6 @@ export default async function handler(req, res) {
     }
     res.status(200).send('Checked all users');
   } catch (error) { 
-    console.error(error);
     res.status(500).send(error.message); 
   }
 }
