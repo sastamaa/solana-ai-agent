@@ -106,11 +106,18 @@ export default async function handler(req, res) {
                             Volume 24h: $${vol}
                             Change 24h: ${pair.priceChange?.h24 || 0}%
                             Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high!`;
-
+                            // --- ВИПРАВЛЕНИЙ ЗАПИТ ДО GOOGLE GEMINI ---
                             const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
-                                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+                                method: 'POST', 
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ 
+                                    contents: [{ 
+                                        role: "user",
+                                        parts: [{ text: prompt }] 
+                                    }] 
+                                })
                             });
+
                             
                             const geminiData = await geminiRes.json();
                             
