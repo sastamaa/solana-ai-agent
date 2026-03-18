@@ -5,13 +5,12 @@ import { Redis } from '@upstash/redis';
 const redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
 const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
 
-// Функція для отримання реального курсу SOL у доларах
 async function getSolPrice() {
     try {
         const res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112');
         const data = await res.json();
         return parseFloat(data.data["So11111111111111111111111111111111111111112"].price);
-    } catch(e) { return 180; } // приблизний курс, якщо API перевантажене
+    } catch(e) { return 180; }
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
@@ -30,7 +29,6 @@ async function editMessage(chatId, messageId, text, replyMarkup = null) {
     });
 }
 
-// --- СЛОВНИК ТЕКСТІВ ---
 const t = {
     uk: {
         welcome: (w, usd) => `👋 <b>Привіт! Я — твій автоматичний крипто-трейдер на базі штучного інтелекту.</b>\n\n🤖 <b>Що я роблю?</b>\nЯ працюю 24/7. Я сам знаходжу нові перспективні монети на Solana, купую їх і автоматично продаю, коли вони виростають у ціні. <i>Тобі взагалі не потрібно нічого робити вручну!</i>\n\n💼 <b>Твій особистий торговий гаманець:</b>\n<code>${w}</code>\n\n⚠️ <b>Як почати?</b>\nПросто перекажи на цю адресу мінімум <b>0.05 SOL (~$${usd})</b>. Ти можеш зробити це з гаманця Phantom або з будь-якої біржі (Binance, WhiteBIT). Як тільки гроші надійдуть, я почну роботу!`,
@@ -65,10 +63,10 @@ export default async function handler(req, res) {
 
             if (text === '/start') {
                 await redis.del(`state_${chatId}`);
-                let userDataStr = await redis.get(`user_${chatId}`);
+                let dbData = await redis.get(`user_${chatId}`);
                 let userData;
                 
-                if (!userDataStr) {
+                if (!dbData) {
                     const wallet = Keypair.generate();
                     userData = {
                         chatId, walletAddress: wallet.publicKey.toString(),
@@ -77,7 +75,7 @@ export default async function handler(req, res) {
                     };
                     await redis.set(`user_${chatId}`, JSON.stringify(userData));
                 } else {
-                    userData = JSON.parse(userDataStr);
+                    userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
                 }
 
                 if (!userData.lang) {
@@ -98,7 +96,8 @@ export default async function handler(req, res) {
                 const state = await redis.get(`state_${chatId}`);
                 if (state === 'awaiting_withdraw') {
                     await redis.del(`state_${chatId}`);
-                    let userData = JSON.parse(await redis.get(`user_${chatId}`));
+                    let dbData = await redis.get(`user_${chatId}`);
+                    let userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
                     const l = userData.lang || 'uk';
                     
                     try {
@@ -132,7 +131,8 @@ export default async function handler(req, res) {
             const messageId = update.callback_query.message.message_id;
             const data = update.callback_query.data;
             
-            let userData = JSON.parse(await redis.get(`user_${chatId}`));
+            let dbData = await redis.get(`user_${chatId}`);
+            let userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
 
             if (data === 'lang_uk' || data === 'lang_en') {
                 userData.lang = data === 'lang_uk' ? 'uk' : 'en';
