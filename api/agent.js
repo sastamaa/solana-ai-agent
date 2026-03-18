@@ -34,8 +34,9 @@ export default async function handler(req, res) {
     const solMint = "So11111111111111111111111111111111111111112";
     const jupHeaders = { 'Content-Type': 'application/json', 'x-api-key': jupiterKey };
 
-    let allUsers = await redis.get('all_users_list') || [];
-    if (allUsers.length === 0) return res.status(200).json({ status: "No users" });
+     const userKeys = await redis.keys('user_*');
+    const allUsers = userKeys.map(key => key.replace('user_', ''));
+    if (allUsers.length === 0) return res.status(200).json({ status: "No users in database" });
 
     for (const chatId of allUsers) {
         let userLogs = { actions: [] };
