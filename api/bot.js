@@ -75,11 +75,11 @@ export default async function handler(req, res) {
     try {
         const update = req.body;
 
-        const getMainMenuKeyboard = (l) => ({
+              const getMainMenuKeyboard = (l) => ({
             inline_keyboard: [
                 [{ text: t[l].btns.status, callback_data: "check_status" }, { text: t[l].btns.ref, callback_data: "referral" }],
                 [{ text: t[l].btns.bal, callback_data: "check_balance" }, { text: t[l].btns.with, callback_data: "withdraw" }],
-                [{ text: t[l].btns.set, callback_data: "settings" }, { text: t[l].btns.key, callback_data: "export_key" }]
+                [{ text: t[l].btns.set, callback_data: "settings" }] // Кнопку "Ключ" ВИДАЛЕНО!
             ]
         });
 
