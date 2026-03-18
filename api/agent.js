@@ -187,9 +187,8 @@ export default async function handler(req, res) {
                             const aiDecision = groqData.choices[0].message.content;
                             
                             // Якщо ШІ каже чекати - записуємо це в лог і ЙДЕМО ДО НАСТУПНОГО ТОКЕНА
-                            if (aiDecision.includes("WAIT")) {
-                                userLogs.actions.push(`<i>Пропустив ${p.baseToken.symbol}</i>`);
-                                continue; 
+                          if (aiDecision.includes("WAIT")) {
+    continue; // Просто йдемо далі, нічого не записуючи в лог
                             }
 
                             // Якщо ШІ каже BUY - купуємо!
@@ -233,9 +232,13 @@ export default async function handler(req, res) {
         
         // Відправляємо звіт в Telegram ТІЛЬКИ якщо бот щось знайшов і прийняв рішення 
         // (щоб не спамити пустими повідомленнями кожні 5 хвилин)
-        if (userLogs.actions.length > 2) {
-            await sendTelegramMessage(chatId, `🤖 <b>Звіт Агента:</b>\n\n` + userLogs.actions.join('\n'), botToken);
-        }
+       // Відправляємо звіт ТІЛЬКИ якщо бот щось реально КУПИВ або ПРОДАВ
+const hasAction = userLogs.actions.some(msg => msg.includes("КУПЛЕНО") || msg.includes("ПРОДАТИ") || msg.includes("Помилка покупки") || msg.includes("Помилка продажу"));
+
+if (hasAction) {
+    await sendTelegramMessage(chatId, `🤖 <b>Звіт Агента:</b>\n\n` + userLogs.actions.join('\n\n'), botToken);
+}
+
         globalLogs.push({ user: chatId, logs: userLogs });
     }
 
