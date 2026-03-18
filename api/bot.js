@@ -2,35 +2,38 @@ import { Keypair, Connection, PublicKey, Transaction, SystemProgram } from '@sol
 import bs58 from 'bs58';
 import { Redis } from '@upstash/redis';
 
-const OWNER_WALLET = new PublicKey("A9KVi2nKqbSbCbHJEfaYayJtHwCT5T5G29EhQQPNKPcn"); // Твій гаманець! Перевір, щоб тут був правильний!
-const FEE_PERCENT = 0.03; 
-const BOT_USERNAME = process.env.BOT_USERNAME || "moneymakersol_bot";
+// --- НАЛАШТУВАННЯ ---
+const OWNER_WALLET = new PublicKey("A9KVi2nKqbSbCbHJEfaYayJtHwCT5T5G29EhQQPNKPcn"); // Твій Phantom гаманець
+const FEE_PERCENT = 0.03; // Комісія 3%
+const BOT_USERNAME = process.env.BOT_USERNAME || "moneymakersol_bot"; // Заміни на свій юзернейм (без @)
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
 const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
 
-// Робимо запити до API паралельними і швидкими
+// --- ДОПОМІЖНІ ФУНКЦІЇ ---
 async function getSolPrice() {
     try {
-        const res = await fetch('https://api.jup.ag/price/v2?ids=SOL', { signal: AbortSignal.timeout(2000) });
+        const res = await fetch('https://api.jup.ag/price/v2?ids=SOL', { signal: AbortSignal.timeout(1500) });
         const data = await res.json();
         return parseFloat(data.data.SOL.price);
-    } catch(e) { return 140; } // Якщо довго думає - беремо 140, щоб не зависати
+    } catch(e) { 
+        return 180; // Резервна ціна, якщо API підвисає
+    } 
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
     const body = { chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
-    return fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
     const body = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
-    return fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-// Словник (залишаємо як є)
+// --- СЛОВНИК ---
 const t = {
     uk: {
         welcome: (w, usd) => `👋 <b>Привіт! Я — твій автоматичний крипто-трейдер.</b>\n\n🤖 <b>Що я роблю?</b>\nЯ працюю 24/7. Я сам знаходжу нові перспективні монети на Solana, купую їх і автоматично продаю, коли вони виростають у ціні.\n\n💼 <b>Твій торговий гаманець:</b>\n<code>${w}</code>\n\n⚠️ <b>Як почати?</b>\nПросто перекажи мінімум <b>0.05 SOL (~$${usd})</b> на цю адресу. Як тільки гроші надійдуть, я почну роботу!`,
@@ -43,7 +46,7 @@ const t = {
         btns: { status: "📊 Статус", bal: "💰 Баланс", with: "💸 Вивести", set: "⚙️ Налаштування", key: "🔑 Ключ", ref: "🤝 Запросити", lang: "🌐 Мова", back: "🔙 Назад", menu: "🔙 Меню" }
     },
     en: {
-        welcome: (w, usd) => `👋 <b>Hello! I am your AI Crypto Bot.</b>\n\n🤖 <b>What do I do?</b>\nI work 24/7. I find new promising coins on Solana, buy them, and automatically sell them.\n\n💼 <b>Your wallet:</b>\n<code>${w}</code>\n\n⚠️ <b>How to start?</b>\nSend at least <b>0.05 SOL (~$${usd})</b>.`,
+        welcome: (w, usd) => `👋 <b>Hello! I am your AI Crypto Bot.</b>\n\n💼 <b>Your wallet:</b>\n<code>${w}</code>\n\n⚠️ <b>How to start?</b>\nSend at least <b>0.05 SOL (~$${usd})</b>.`,
         status_msg: "📊 <b>Status: ACTIVE 🟢</b>\n\nThe bot is connected and scans the market every 2 mins.",
         bal: (sol, usd) => `💰 <b>Your Balance:</b>\n<b>${sol} SOL</b> (~$${usd})`,
         with_prompt: "💸 <b>Withdraw Funds</b>\n\nPlease send me your <b>Solana wallet address</b>.\n\n<i>Note: A 3% fee is applied.</i>",
@@ -80,53 +83,63 @@ export default async function handler(req, res) {
 
         const langKeyboard = { inline_keyboard: [[{ text: "🇺🇦 Українська", callback_data: "lang_uk" }], [{ text: "🇬🇧 English", callback_data: "lang_en" }], [{ text: "🇬🇷 Ελληνικά", callback_data: "lang_el" }]]};
 
-        // ТЕКСТОВІ КОМАНДИ (/start)
+        // --- ТЕКСТОВІ ПОВІДОМЛЕННЯ ТА /START ---
         if (update.message && update.message.text) {
             const chatId = update.message.chat.id;
             const text = update.message.text.trim();
 
             if (text.startsWith('/start')) {
-                res.status(200).send('OK'); // МИТТЄВА ВІДПОВІДЬ TELEGRAM
-                
-                await redis.del(`state_${chatId}`);
-                const refCode = text.split(' ')[1]; 
-                
-                let dbData = await redis.get(`user_${chatId}`);
-                let userData;
-                
-                if (!dbData) {
-                    const wallet = Keypair.generate();
-                    userData = {
-                        chatId, walletAddress: wallet.publicKey.toString(), privateKey: bs58.encode(wallet.secretKey), isActive: true,
-                        settings: { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 }, lang: null,
-                        invitedBy: refCode ? refCode.replace('ref_', '') : null
-                    };
-                    await redis.set(`user_${chatId}`, JSON.stringify(userData));
-                } else { userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData; }
+                // Відправляємо миттєву імітацію "друкування" щоб Telegram не видавав помилку "таймаут"
+                fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, action: 'typing' })
+                }).catch(() => {});
 
-                if (!userData.lang) {
-                    await sendMessage(chatId, "🌐 <b>Choose your language:</b>", langKeyboard);
-                    return;
+                try {
+                    await redis.del(`state_${chatId}`);
+                    const refCode = text.split(' ')[1]; 
+                    
+                    let userDataStr = await redis.get(`user_${chatId}`);
+                    let userData;
+                    
+                    if (!userDataStr) {
+                        const wallet = Keypair.generate();
+                        userData = {
+                            chatId, walletAddress: wallet.publicKey.toString(), privateKey: bs58.encode(wallet.secretKey), isActive: true,
+                            settings: { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 }, lang: null,
+                            invitedBy: refCode ? refCode.replace('ref_', '') : null
+                        };
+                        await redis.set(`user_${chatId}`, JSON.stringify(userData));
+                    } else { 
+                        userData = typeof userDataStr === 'string' ? JSON.parse(userDataStr) : userDataStr; 
+                    }
+
+                    if (!userData.lang) {
+                        await sendMessage(chatId, "🌐 <b>Choose your language:</b>", langKeyboard);
+                    } else {
+                        const solPrice = await getSolPrice();
+                        const usdAmount = (0.05 * solPrice).toFixed(2);
+                        await sendMessage(chatId, t[userData.lang].welcome(userData.walletAddress, usdAmount), getMainMenuKeyboard(userData.lang));
+                    }
+                } catch (e) {
+                    console.error("Error at /start:", e);
+                    await sendMessage(chatId, "⚠️ System error. Please try /start again.");
                 }
-
-                const solPrice = await getSolPrice();
-                await sendMessage(chatId, t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(userData.lang));
+                
+                return res.status(200).send('OK');
             } 
             else {
-                // ОБРОБКА ВИВОДУ
+                // --- ВИВЕДЕННЯ КОШТІВ ---
                 const state = await redis.get(`state_${chatId}`);
                 if (state === 'awaiting_withdraw') {
-                    res.status(200).send('OK'); // Відповідаємо одразу
                     await redis.del(`state_${chatId}`);
-                    
-                    let dbData = await redis.get(`user_${chatId}`);
-                    let userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
+                    let userDataStr = await redis.get(`user_${chatId}`);
+                    let userData = typeof userDataStr === 'string' ? JSON.parse(userDataStr) : userDataStr;
                     const l = userData.lang || 'uk';
                     
                     try {
                         const toPublicKey = new PublicKey(text);
                         const fromWallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
-                        await sendMessage(chatId, "⏳ Обробка...");
+                        await sendMessage(chatId, "⏳ Processing transaction...");
 
                         const balance = await connection.getBalance(fromWallet.publicKey);
                         const networkFeeReserve = 5000000; 
@@ -150,23 +163,22 @@ export default async function handler(req, res) {
                         const txid = await connection.sendRawTransaction(transaction.serialize());
                         await sendMessage(chatId, t[l].succ_with((userLamports / 1e9).toFixed(5), (ownerFeeLamports / 1e9).toFixed(5), text, txid));
                     } catch (e) { await sendMessage(chatId, t[l].err_with); }
+                    
+                    return res.status(200).send('OK');
                 }
             }
         }
 
-        // НАТИСКАННЯ НА КНОПКИ
+        // --- ОБРОБКА КНОПОК МЕНЮ ---
         if (update.callback_query) {
-            // МИТТЄВА ВІДПОВІДЬ НА НАТИСКАННЯ (прибирає "крутілку")
-            fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, { 
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: update.callback_query.id }) 
-            }).catch(e=>console.log(e));
-            
-            res.status(200).send('OK'); // Закриваємо запит від Vercel
-
-            // Далі виконуємо логіку у фоні
             const chatId = update.callback_query.message.chat.id;
             const messageId = update.callback_query.message.message_id;
             const data = update.callback_query.data;
+            
+            // Відповідаємо Telegram, щоб прибрати "завантаження" з кнопки
+            fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, { 
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: update.callback_query.id }) 
+            }).catch(() => {});
             
             let dbData = await redis.get(`user_${chatId}`);
             let userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
@@ -176,10 +188,11 @@ export default async function handler(req, res) {
                 await redis.set(`user_${chatId}`, JSON.stringify(userData));
                 const solPrice = await getSolPrice();
                 await editMessage(chatId, messageId, t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(userData.lang));
-                return;
+                return res.status(200).send('OK');
             }
-            if(!userData.lang) return;
-
+            
+            if(!userData.lang) return res.status(200).send('OK');
+            
             const l = userData.lang;
 
             if (data === 'main_menu') {
@@ -187,7 +200,9 @@ export default async function handler(req, res) {
                 const solPrice = await getSolPrice();
                 await editMessage(chatId, messageId, t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(l));
             }
-            else if (data === 'check_status') await editMessage(chatId, messageId, t[l].status_msg, { inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]] });
+            else if (data === 'check_status') {
+                await editMessage(chatId, messageId, t[l].status_msg, { inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]] });
+            }
             else if (data === 'check_balance') {
                 const balance = await connection.getBalance(new PublicKey(userData.walletAddress));
                 const solPrice = await getSolPrice();
@@ -205,22 +220,18 @@ export default async function handler(req, res) {
                 await editMessage(chatId, messageId, t[l].ref_msg(link), { inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]] });
             }
             else if (data === 'settings') {
-                const solPrice = await getSolPrice();
                 const keyboard = { inline_keyboard: [
                     [{ text: `💸 ${userData.settings.tradeAmount} SOL`, callback_data: "edit_trade" }, { text: `📈 TP: +${userData.settings.takeProfit}%`, callback_data: "edit_tp" }],
                     [{ text: t[l].btns.lang, callback_data: "choose_lang" }, { text: `📉 SL: -${userData.settings.stopLoss}%`, callback_data: "edit_sl" }],
                     [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                 ]};
-                await editMessage(chatId, messageId, t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)), keyboard);
+                await editMessage(chatId, messageId, t[l].set_main(userData.settings, "..."), keyboard);
             }
-            else if (data === 'choose_lang') await editMessage(chatId, messageId, "🌐 <b>Choose your language:</b>", langKeyboard);
-            
+            else if (data === 'choose_lang') {
+                await editMessage(chatId, messageId, "🌐 <b>Choose your language:</b>", langKeyboard);
+            }
             else if (data === 'edit_trade') {
-                const keyboard = { inline_keyboard: [
-                    [{ text: `0.02 SOL`, callback_data: "set_trade_0.02" }, { text: `0.05 SOL`, callback_data: "set_trade_0.05" }],
-                    [{ text: `0.1 SOL`, callback_data: "set_trade_0.1" }, { text: `0.5 SOL`, callback_data: "set_trade_0.5" }],
-                    [{ text: t[l].btns.back, callback_data: "settings" }]
-                ]};
+                const keyboard = { inline_keyboard: [[{ text: `0.02 SOL`, callback_data: "set_trade_0.02" }, { text: `0.05 SOL`, callback_data: "set_trade_0.05" }], [{ text: `0.1 SOL`, callback_data: "set_trade_0.1" }, { text: `0.5 SOL`, callback_data: "set_trade_0.5" }], [{ text: t[l].btns.back, callback_data: "settings" }]]};
                 await editMessage(chatId, messageId, "💸", keyboard);
             }
             else if (data === 'edit_tp') {
@@ -238,16 +249,20 @@ export default async function handler(req, res) {
                 if (parts[1] === 'sl') userData.settings.stopLoss = parseFloat(parts[2]);
                 await redis.set(`user_${chatId}`, JSON.stringify(userData));
                 
-                const solPrice = await getSolPrice();
                 const keyboard = { inline_keyboard: [
                     [{ text: `💸 ${userData.settings.tradeAmount} SOL`, callback_data: "edit_trade" }, { text: `📈 TP: +${userData.settings.takeProfit}%`, callback_data: "edit_tp" }],
                     [{ text: t[l].btns.lang, callback_data: "choose_lang" }, { text: `📉 SL: -${userData.settings.stopLoss}%`, callback_data: "edit_sl" }],
                     [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                 ]};
-                await editMessage(chatId, messageId, "✅\n\n" + t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)), keyboard);
+                await editMessage(chatId, messageId, "✅\n\n" + t[l].set_main(userData.settings, "..."), keyboard);
             }
+            
+            return res.status(200).send('OK');
         }
+
+        return res.status(200).send('OK');
     } catch (error) { 
-        if(!res.headersSent) res.status(500).send('Error'); 
+        console.error("Global Handler Error:", error);
+        return res.status(500).send('Error'); 
     }
 }
