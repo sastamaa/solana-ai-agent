@@ -22,7 +22,7 @@ const t = {
 
 export default async function handler(req, res) {
   try {
-    const geminiKey = process.env.GEMINI_API_KEY; // ТЕПЕР ВИКОРИСТОВУЄМО GEMINI
+    const geminiKey = process.env.GEMINI_API_KEY; 
     const jupiterKey = process.env.JUPITER_API_KEY; 
     const redisUrl = process.env.KV_REST_API_URL;
     const redisToken = process.env.KV_REST_API_TOKEN;
@@ -107,7 +107,6 @@ export default async function handler(req, res) {
                             Change 24h: ${pair.priceChange?.h24 || 0}%
                             Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high!`;
 
-                            // --- ЗАПИТ ДО GOOGLE GEMINI ---
                             const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`, {
                                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
@@ -115,8 +114,14 @@ export default async function handler(req, res) {
                             
                             const geminiData = await geminiRes.json();
                             
-                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0]) {
-                                userLogs.actions.push(`⚠️ <b>Помилка ШІ.</b> Перевірка переноситься на наступний цикл.`);
+                            // ДІАГНОСТИКА ПОМИЛКИ
+                            if (geminiData.error) {
+                                userLogs.actions.push(`⚠️ <b>Помилка Google API:</b> ${geminiData.error.message}`);
+                                break;
+                            }
+                            
+                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0] || !geminiData.candidates[0].content) {
+                                userLogs.actions.push(`⚠️ <b>ШІ не дав відповіді.</b> Можливо, блокування контенту (Safety).`);
                                 break; 
                             }
                             
