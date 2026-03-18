@@ -46,7 +46,7 @@ export default async function handler(req, res) {
         if (!userData.isActive) continue;
 
         const wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
-        const settings = userData.settings || { tradeAmount: 0.05, takeProfit: 15, stopLoss: 10 };
+        const settings = userData.settings || { tradeAmount: 0.01, takeProfit: 15, stopLoss: 10 };
         
         userLogs.actions.push(`💼 <b>Гаманець:</b> ${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}`);
         userLogs.actions.push("🔍 <b>Перевірка портфеля:</b>");
