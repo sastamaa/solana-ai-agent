@@ -12,7 +12,7 @@ async function sendTelegramMessage(chatId, text, botToken) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true })
-  }).catch(err => console.error("Помилка Telegram:", err));
+  }).catch(err => console.error("Telegram error:", err));
 }
 
 export default async function handler(req, res) {
@@ -25,7 +25,9 @@ export default async function handler(req, res) {
     const redisToken = process.env.KV_REST_API_TOKEN;
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     
-    if (!groqKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys");
+    if (!groqKey || !jupiterKey || !redisUrl || !redisToken) {
+        throw new Error("Missing API Keys");
+    }
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
     const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
@@ -43,8 +45,6 @@ export default async function handler(req, res) {
         if (!userData.isActive) continue;
 
         const wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
-        
-        // НОВІ БЕЗПЕЧНІ НАЛАШТУВАННЯ (Скальпінг)
         const settings = userData.settings || { tradeAmount: 0.05, takeProfit: 15, stopLoss: 10 };
         
         userLogs.actions.push(`💼 <b>Гаманець:</b> ${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}`);
@@ -91,11 +91,10 @@ export default async function handler(req, res) {
 
                     if (profitPercent >= settings.takeProfit) {
                         shouldSell = true; sellReason = `Тейк-профіт (+${settings.takeProfit}%)`;
-                    } else if (maxPrice > buyPrice && dropFromMax >= 5) { // Зменшили відкат до 5%
+                    } else if (maxPrice > buyPrice && dropFromMax >= 5) {
                         shouldSell = true; sellReason = "Trailing Stop (-5% від піку)";
                     } else if (profitPercent <= -settings.stopLoss) {
                         shouldSell = true; sellReason = `Stop-Loss (-${settings.stopLoss}%)`;
-                        // ДОДАЄМО В ЧОРНИЙ СПИСОК (БЛОКУЄМО НА 24 ГОДИНИ)
                         await redis.set(`blacklist_${mintAddress}_${chatId}`, "true", { ex: 86400 });
                     }
                 } else {
@@ -152,7 +151,7 @@ ${displayProfit}`);
         const solBalance = await connection.getBalance(wallet.publicKey);
         const solBalanceUi = solBalance / 1e9; 
         let tradeAmountUi = settings.tradeAmount;
-        const canAfford = (solBalanceUi - tradeAmountUi) >= 0.015; // Збільшили резерв на газ
+        const canAfford = (solBalanceUi - tradeAmountUi) >= 0.015;
         
         if (tokenCount >= 3 || !canAfford) {
             userLogs.actions.push(`
@@ -164,7 +163,7 @@ ${displayProfit}`);
 
         userLogs.actions.push("
 🎯 <b>Режим Снайпера (БЕЗПЕЧНИЙ ПОШУК):</b>");
-        const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000); // Вік токена: мінімум 2 години
+        const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000); 
         
         const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
         const searchData = await searchRes.json();
@@ -175,11 +174,10 @@ ${displayProfit}`);
             if (p.chainId === 'solana' && p.volume && p.volume.h24 > 150000 && p.liquidity && p.liquidity.usd > 50000 && 
                 p.baseToken.symbol !== 'SOL' && p.pairCreatedAt && p.pairCreatedAt < twoHoursAgo) {
                 
-                // Перевіряємо Чорний список!
                 const isBlacklisted = await redis.get(`blacklist_${p.baseToken.address}_${chatId}`);
                 if (!isBlacklisted) {
                     targetToken = p;
-                    break; // Беремо першу безпечну монету
+                    break;
                 }
             }
         }
@@ -189,7 +187,6 @@ ${displayProfit}`);
             continue;
         }
 
-        // ШІ тепер не купує монети, що виросли більше ніж на 30%
         const prompt = `Ти консервативний крипто-снайпер. Токен: ${targetToken.baseToken.symbol}. Зміна 24г: ${targetToken.priceChange.h24}%. Об'єм: $${targetToken.volume.h24}. Якщо зміна більше 30% або менше 0% - пиши "WAIT". Напиши "BUY", тільки якщо бачиш стабільний ріст від 5% до 25%. Інакше "WAIT". Формат: "РІШЕННЯ: пояснення"`;
 
         const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
