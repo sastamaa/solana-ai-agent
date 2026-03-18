@@ -28,10 +28,11 @@ export default async function handler(req, res) {
     const redisToken = process.env.KV_REST_API_TOKEN;
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     
-    if (!groqKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys");
+    if (!groqKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys in Vercel settings!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
-    const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
+    // Повертаємо стандартний безкоштовний вузол, щоб уникнути блокувань
+    const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
     const solMint = "So11111111111111111111111111111111111111112"; 
     const jupHeaders = { 'Content-Type': 'application/json', 'x-api-key': jupiterKey };
 
@@ -56,68 +57,34 @@ export default async function handler(req, res) {
         const settings = userData.settings || { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 };
         userLogs.actions.push(`${langDict.wal} <code>${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}</code>`);
         
-        const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
         let soldSomething = false; 
         let activeTokensCount = 0; 
 
-        // БЛОК ПРОДАЖУ
-        for (const acc of accounts.value) {
-          const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
-          const mintAddress = acc.account.data.parsed.info.mint;
-          
-          if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
-            activeTokensCount++; 
-            try {
-                const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
-                const dexData = await dexRes.json();
+        try {
+            // Читаємо баланс і токени (якщо тут помилка - ми її зловимо!)
+            const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+            const balance = await connection.getBalance(wallet.publicKey);
+            
+            for (const acc of accounts.value) {
+                const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
+                const mintAddress = acc.account.data.parsed.info.mint;
                 
-                if (dexData.pairs && dexData.pairs.length > 0) {
-                    const pair = dexData.pairs[0];
-                    const currentPrice = parseFloat(pair.priceUsd);
-                    const buyKey = `buy_price_${mintAddress}_${chatId}`;
-                    let buyPriceStr = await redis.get(buyKey);
-                    
-                    if (buyPriceStr) {
-                        const buyPrice = parseFloat(buyPriceStr);
-                        const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
-                        
-                        if (percentChange >= settings.takeProfit || percentChange <= -settings.stopLoss) {
-                            const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=150`, { headers: jupHeaders });
-                            const quoteData = await quoteRes.json();
-                            
-                            const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', { method: 'POST', headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
-                            const swapData = await swapRes.json();
-                            
-                            const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
-                            const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-                            transaction.sign([wallet]);
-                            const txid = await connection.sendRawTransaction(transaction.serialize());
-                            
-                            const reason = percentChange >= settings.takeProfit ? `📈 Take-Profit (+${percentChange.toFixed(1)}%)` : `📉 Stop-Loss (${percentChange.toFixed(1)}%)`;
-                            userLogs.actions.push(`${langDict.sell} ${pair.baseToken.symbol} | ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
-                            await redis.del(buyKey);
-                            soldSomething = true;
-                            activeTokensCount--; 
-                        }
-                    }
+                if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
+                    activeTokensCount++; 
                 }
-            } catch (err) {}
-          }
-        }
+            }
 
-        // БЛОК ПОШУКУ ТА ПОКУПКИ
-        if (!soldSomething && activeTokensCount < 3) {
-            try {
-                const balance = await connection.getBalance(wallet.publicKey);
+            // БЛОК ПОШУКУ ТА ПОКУПКИ
+            if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
-                // ПЕРЕВІРКА НА БАЛАНС!
                 if (balance < tradeLamports + 5000000) {
-                    userLogs.actions.push(`⚠️ <b>Увага: Недостатньо SOL для покупки!</b>\nВ налаштуваннях: ${settings.tradeAmount} SOL.\nВаш баланс: ${(balance/1e9).toFixed(4)} SOL.\n<i>Будь ласка, поповніть баланс або зайдіть у "Налаштування" та зменшіть суму покупки!</i>`);
+                    userLogs.actions.push(`⚠️ <b>Увага: Недостатньо SOL для покупки!</b>\nНалаштування: ${settings.tradeAmount} SOL.\nБаланс: ${(balance/1e9).toFixed(4)} SOL.`);
                 } else {
                     const trendRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
                     const trendData = await trendRes.json();
                     
+                    let checkedTokens = 0;
                     for (const p of trendData) {
                         if (p.chainId !== 'solana' || p.tokenAddress === solMint) continue;
                         
@@ -132,6 +99,8 @@ export default async function handler(req, res) {
                             const vol = pair.volume?.h24 || 0;
                             
                             if (liq < 5000 || vol < 10000) continue; 
+                            
+                            checkedTokens++;
 
                             const prompt = `
                             ${langDict.inst}
@@ -139,9 +108,7 @@ export default async function handler(req, res) {
                             Liquidity: $${liq}
                             Volume 24h: $${vol}
                             Change 24h: ${pair.priceChange?.h24 || 0}%
-                            
-                            Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high! 
-                            If it looks promising, reply 'BUY'. If it's dead or dangerous, reply 'WAIT'. Give reason.`;
+                            Rule: You can answer only WAIT or BUY. Give 1 reason.`;
 
                             const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                                 method: 'POST', headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
@@ -167,23 +134,32 @@ export default async function handler(req, res) {
                                     await redis.set(`buy_price_${p.tokenAddress}_${chatId}`, pair.priceUsd);
                                     userLogs.actions.push(`${langDict.buy} ${pair.baseToken.symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break; 
+                                } else {
+                                    userLogs.actions.push(`❌ Jupiter відхилив своп для ${pair.baseToken.symbol}: ${quoteData.error}`);
+                                    break;
                                 }
                             } else {
-                                // ЯКЩО ШІ ВІДХИЛИВ МОНЕТУ - ПИШЕМО ПРО ЦЕ В ЧАТ!
                                 userLogs.actions.push(`🔎 <b>Сканування:</b> ${pair.baseToken.symbol}\n🧠 <b>Думка ШІ:</b> ${aiDecision}`);
-                                break; // Перевіряємо лише 1 токен за цикл, щоб не засмічувати чат
+                                break; 
                             }
                         }
                     }
+                    if (checkedTokens === 0) userLogs.actions.push(`⚠️ Не знайдено токенів на DexScreener з достатнім об'ємом.`);
                 }
-            } catch (err) {}
+            }
+
+        } catch (err) {
+            // ТЕПЕР МИ БАЧИМО ВСІ ПОМИЛКИ!
+            userLogs.actions.push(`🚨 <b>КРИТИЧНА ПОМИЛКА БОТА:</b>\n<code>${err.message}</code>`);
         }
 
-        // ВІДПРАВЛЯЄМО ЗВІТ (якщо є хоча б 2 рядки - Гаманець + Дія/Аналіз)
         if (userLogs.actions.length > 1) {
             await sendTelegramMessage(chatId, `${langDict.rep}\n\n` + userLogs.actions.join('\n\n'), botToken);
         }
     }
     res.status(200).send('Checked all users');
-  } catch (error) { res.status(500).send('Error'); }
+  } catch (error) { 
+    console.error(error);
+    res.status(500).send(error.message); 
+  }
 }
