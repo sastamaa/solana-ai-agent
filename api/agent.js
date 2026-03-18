@@ -106,9 +106,7 @@ export default async function handler(req, res) {
                 }
                 
                 if (shouldSell) {
-                    userLogs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! 
-Причина: ${sellReason}
-${displayProfit}`);
+                    userLogs.actions.push(`🚨 Вирішено <b>ПРОДАТИ</b> ${pair.baseToken.symbol}! \nПричина: ${sellReason}\n${displayProfit}`);
                     try {
                         const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=1000`, { headers: jupHeaders });
                         const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
@@ -123,27 +121,21 @@ ${displayProfit}`);
                         transaction.sign([wallet]);
                         const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true });
                         
-                        userLogs.actions.push(`✅ Продано! 
-TX: https://solscan.io/tx/${txid}`);
+                        userLogs.actions.push(`✅ Продано! \nTX: https://solscan.io/tx/${txid}`);
                         await redis.del(buyKey); await redis.del(maxKey);
                         tokenCount--; soldSomething = true;
                     } catch (err) {
                         userLogs.actions.push(`❌ Помилка продажу: ${err.message}`);
                     }
                 } else {
-                    userLogs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо. 
-${displayProfit}`);
+                    userLogs.actions.push(`🟡 Токен ${pair.baseToken.symbol} тримаємо. \n${displayProfit}`);
                 }
             }
           }
         }
 
         if (soldSomething) {
-            await sendTelegramMessage(chatId, `🤖 <b>Звіт:</b>
-
-` + userLogs.actions.join('
-
-'), botToken);
+            await sendTelegramMessage(chatId, `🤖 <b>Звіт:</b>\n\n` + userLogs.actions.join('\n\n'), botToken);
             globalLogs.push({ user: chatId, logs: userLogs });
             continue; 
         }
@@ -154,15 +146,12 @@ ${displayProfit}`);
         const canAfford = (solBalanceUi - tradeAmountUi) >= 0.015;
         
         if (tokenCount >= 3 || !canAfford) {
-            userLogs.actions.push(`
-⏸ Нові покупки призупинено. В портфелі: ${tokenCount}/3. 
-Вільний баланс: ${solBalanceUi.toFixed(3)} SOL.`);
+            userLogs.actions.push(`\n⏸ Нові покупки призупинено. В портфелі: ${tokenCount}/3. \nВільний баланс: ${solBalanceUi.toFixed(3)} SOL.`);
             globalLogs.push({ user: chatId, logs: userLogs });
             continue; 
         }
 
-        userLogs.actions.push("
-🎯 <b>Режим Снайпера (БЕЗПЕЧНИЙ ПОШУК):</b>");
+        userLogs.actions.push("\n🎯 <b>Режим Снайпера (БЕЗПЕЧНИЙ ПОШУК):</b>");
         const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000); 
         
         const searchRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=raydium');
@@ -195,8 +184,7 @@ ${displayProfit}`);
         });
         
         const aiDecision = (await groqResponse.json()).choices[0].message.content;
-        userLogs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>
-🧠 ШІ: ${aiDecision}`);
+        userLogs.actions.push(`Токен: <b>${targetToken.baseToken.symbol}</b>\n🧠 ШІ: ${aiDecision}`);
 
         if (aiDecision.includes("BUY")) {
             try {
@@ -219,20 +207,14 @@ ${displayProfit}`);
                 await redis.set(`buy_price_${targetToken.baseToken.address}_${chatId}`, currentPrice);
                 await redis.set(`max_price_${targetToken.baseToken.address}_${chatId}`, currentPrice);
 
-                userLogs.actions.push(`
-✅ <b>КУПЛЕНО!</b> Потрачено ${tradeAmountUi} SOL. 
-TX: https://solscan.io/tx/${txid}`);
+                userLogs.actions.push(`\n✅ <b>КУПЛЕНО!</b> Потрачено ${tradeAmountUi} SOL. \nTX: https://solscan.io/tx/${txid}`);
                 
             } catch (err) {
-                 userLogs.actions.push(`
-❌ Помилка покупки: ${err.message}`);
+                 userLogs.actions.push(`\n❌ Помилка покупки: ${err.message}`);
             }
         }
         
-        await sendTelegramMessage(chatId, `🤖 <b>Звіт Агента:</b>
-
-` + userLogs.actions.join('
-'), botToken);
+        await sendTelegramMessage(chatId, `🤖 <b>Звіт Агента:</b>\n\n` + userLogs.actions.join('\n'), botToken);
         globalLogs.push({ user: chatId, logs: userLogs });
     }
 
