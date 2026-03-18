@@ -1,4 +1,4 @@
-import { Keypair, Connection, PublicKey } from '@solana/web3.js';
+import { Keypair, Connection, PublicKey, Transaction, SystemProgram } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { Redis } from '@upstash/redis';
 
@@ -8,18 +8,16 @@ const redis = new Redis({
 });
 const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
 
-// Функція для відправки НОВОГО повідомлення
 async function sendMessage(chatId, text, replyMarkup = null) {
     const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
+    const body = { chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
     await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-// Функція для РЕДАГУВАННЯ існуючого повідомлення (щоб кнопки оновлювалися в одному повідомленні)
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
     const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`;
-    const body = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML' };
+    const body = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
     await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
@@ -30,12 +28,14 @@ export default async function handler(req, res) {
     try {
         const update = req.body;
 
-        // --- ОБРОБКА ТЕКСТОВИХ КОМАНД (/start) ---
+        // --- 1. ОБРОБКА ТЕКСТОВИХ ПОВІДОМЛЕНЬ ---
         if (update.message && update.message.text) {
             const chatId = update.message.chat.id;
-            const text = update.message.text;
+            const text = update.message.text.trim();
 
             if (text === '/start') {
+                await redis.del(`state_${chatId}`); // Очищаємо всі стани
+                
                 let userDataStr = await redis.get(`user_${chatId}`);
                 let userData;
                 
@@ -52,20 +52,66 @@ export default async function handler(req, res) {
                 }
 
                 const welcomeText = `👋 <b>Головне меню</b>\n\n💼 <b>Твій торговий гаманець:</b>\n<code>${userData.walletAddress}</code>\n\n⚠️ <i>Поповни його мінімум на 0.05 SOL, щоб почати роботу.</i>`;
-                
                 const keyboard = {
                     inline_keyboard: [
                         [{ text: "💰 Мій баланс", callback_data: "check_balance" }],
-                        [{ text: "⚙️ Налаштування", callback_data: "settings" }],
-                        [{ text: "🔑 Експорт ключа", callback_data: "export_key" }]
+                        [{ text: "💸 Вивести SOL", callback_data: "withdraw" }],
+                        [{ text: "⚙️ Налаштування", callback_data: "settings" }, { text: "🔑 Ключ", callback_data: "export_key" }]
                     ]
                 };
-
                 await sendMessage(chatId, welcomeText, keyboard);
+            } 
+            else {
+                // ПЕРЕВІРКА: Чи чекає бот на введення адреси для виведення?
+                const state = await redis.get(`state_${chatId}`);
+                if (state === 'awaiting_withdraw') {
+                    await redis.del(`state_${chatId}`); // Одразу видаляємо стан, щоб уникнути спаму
+                    
+                    try {
+                        const toPublicKey = new PublicKey(text); // Перевіряємо, чи це валідна адреса Solana
+                        
+                        let userDataStr = await redis.get(`user_${chatId}`);
+                        let userData = JSON.parse(userDataStr);
+                        const fromWallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
+                        
+                        await sendMessage(chatId, "⏳ Обробка транзакції... Зачекайте.");
+
+                        const balance = await connection.getBalance(fromWallet.publicKey);
+                        const feeReserve = 5000000; // Залишаємо 0.005 SOL на комісію
+                        
+                        if (balance <= feeReserve) {
+                            await sendMessage(chatId, "❌ Недостатньо коштів для виведення. На балансі має бути більше 0.005 SOL.");
+                            return res.status(200).send('OK');
+                        }
+
+                        const transferAmount = balance - feeReserve;
+                        
+                        const transaction = new Transaction().add(
+                            SystemProgram.transfer({
+                                fromPubkey: fromWallet.publicKey,
+                                toPubkey: toPublicKey,
+                                lamports: transferAmount,
+                            })
+                        );
+
+                        const { blockhash } = await connection.getLatestBlockhash('finalized');
+                        transaction.recentBlockhash = blockhash;
+                        transaction.feePayer = fromWallet.publicKey;
+                        transaction.sign(fromWallet);
+
+                        const txid = await connection.sendRawTransaction(transaction.serialize());
+                        const amountUi = (transferAmount / 1e9).toFixed(5);
+
+                        await sendMessage(chatId, `✅ <b>Успішно виведено!</b>\n\n💸 Відправлено: <b>${amountUi} SOL</b>\n📍 На адресу: <code>${toPublicKey.toString()}</code>\n\n🔍 <a href="https://solscan.io/tx/${txid}">Подивитись чек (Solscan)</a>`);
+                    } catch (e) {
+                        console.error("Withdraw error:", e);
+                        await sendMessage(chatId, "❌ <b>Помилка!</b> Ви надіслали невірну адресу гаманця Solana або сталася помилка мережі.\n\nНатисніть /start, щоб спробувати ще раз.");
+                    }
+                }
             }
         }
 
-        // --- ОБРОБКА НАТИСКАНЬ НА КНОПКИ ---
+        // --- 2. ОБРОБКА НАТИСКАНЬ НА КНОПКИ ---
         if (update.callback_query) {
             const chatId = update.callback_query.message.chat.id;
             const messageId = update.callback_query.message.message_id;
@@ -73,28 +119,21 @@ export default async function handler(req, res) {
             
             let userDataStr = await redis.get(`user_${chatId}`);
             let userData = typeof userDataStr === 'string' ? JSON.parse(userDataStr) : userDataStr;
-            
-            // Захист: якщо налаштувань ще немає (у старих юзерів), створюємо їх
-            if (!userData.settings) {
-                userData.settings = { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 };
-                await redis.set(`user_${chatId}`, JSON.stringify(userData));
-            }
-            const s = userData.settings;
+            const s = userData.settings || { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 };
 
-            // 1. КНОПКА: Назад в Головне меню
             if (data === 'main_menu') {
+                await redis.del(`state_${chatId}`); // Скидаємо стани при поверненні в меню
                 const text = `🏠 <b>Головне меню</b>\n\n💼 <b>Твій гаманець:</b>\n<code>${userData.walletAddress}</code>`;
                 const keyboard = {
                     inline_keyboard: [
                         [{ text: "💰 Мій баланс", callback_data: "check_balance" }],
-                        [{ text: "⚙️ Налаштування", callback_data: "settings" }],
-                        [{ text: "🔑 Експорт ключа", callback_data: "export_key" }]
+                        [{ text: "💸 Вивести SOL", callback_data: "withdraw" }],
+                        [{ text: "⚙️ Налаштування", callback_data: "settings" }, { text: "🔑 Ключ", callback_data: "export_key" }]
                     ]
                 };
                 await editMessage(chatId, messageId, text, keyboard);
             }
             
-            // 2. КНОПКА: Баланс
             else if (data === 'check_balance') {
                 const balance = await connection.getBalance(new PublicKey(userData.walletAddress));
                 const sol = (balance / 1e9).toFixed(4);
@@ -102,17 +141,23 @@ export default async function handler(req, res) {
                 const keyboard = { inline_keyboard: [[{ text: "🔙 Назад", callback_data: "main_menu" }]] };
                 await editMessage(chatId, messageId, text, keyboard);
             }
-            
-            // 3. КНОПКА: Експорт ключа
-            else if (data === 'export_key') {
-                const text = `🔑 <b>Твій приватний ключ Phantom:</b>\n<code>${userData.privateKey}</code>\n\n🚨 <i>Ніколи не передавай його стороннім!</i>`;
+
+            // НОВА КНОПКА: Виведення коштів
+            else if (data === 'withdraw') {
+                await redis.set(`state_${chatId}`, 'awaiting_withdraw', { ex: 3600 }); // Чекаємо адресу 1 годину
+                const text = `💸 <b>Виведення коштів</b>\n\nБудь ласка, надішліть у чат <b>адресу вашого гаманця Solana</b> (наприклад, з Binance, Bybit або Phantom), куди вивести всі вільні SOL.\n\n<i>Для скасування натисніть "Назад" або /start.</i>`;
                 const keyboard = { inline_keyboard: [[{ text: "🔙 Назад", callback_data: "main_menu" }]] };
                 await editMessage(chatId, messageId, text, keyboard);
             }
             
-            // 4. КНОПКА: ГОЛОВНІ НАЛАШТУВАННЯ
+            else if (data === 'export_key') {
+                const text = `🔑 <b>Приватний ключ Phantom:</b>\n<code>${userData.privateKey}</code>\n\n🚨 <i>Ніколи не передавай його стороннім!</i>`;
+                const keyboard = { inline_keyboard: [[{ text: "🔙 Назад", callback_data: "main_menu" }]] };
+                await editMessage(chatId, messageId, text, keyboard);
+            }
+            
             else if (data === 'settings') {
-                const text = `⚙️ <b>Налаштування снайпера:</b>\nОбери параметр, який хочеш змінити:`;
+                const text = `⚙️ <b>Налаштування снайпера:</b>`;
                 const keyboard = {
                     inline_keyboard: [
                         [{ text: `💸 Сума покупки: ${s.tradeAmount} SOL`, callback_data: "edit_trade" }],
@@ -124,48 +169,35 @@ export default async function handler(req, res) {
                 await editMessage(chatId, messageId, text, keyboard);
             }
             
-            // 5. ПІДМЕНЮ: Зміна суми покупки
             else if (data === 'edit_trade') {
-                const text = `💸 <b>Обери суму для однієї покупки:</b>\n<i>Поточна: ${s.tradeAmount} SOL</i>`;
-                const keyboard = {
-                    inline_keyboard: [
-                        [{ text: "0.02 SOL (~$4)", callback_data: "set_trade_0.02" }, { text: "0.05 SOL (~$10)", callback_data: "set_trade_0.05" }],
-                        [{ text: "0.1 SOL (~$20)", callback_data: "set_trade_0.1" }, { text: "0.5 SOL (~$100)", callback_data: "set_trade_0.5" }],
-                        [{ text: "🔙 Назад", callback_data: "settings" }]
-                    ]
-                };
-                await editMessage(chatId, messageId, text, keyboard);
+                const keyboard = { inline_keyboard: [
+                    [{ text: "0.02 SOL", callback_data: "set_trade_0.02" }, { text: "0.05 SOL", callback_data: "set_trade_0.05" }],
+                    [{ text: "0.1 SOL", callback_data: "set_trade_0.1" }, { text: "0.5 SOL", callback_data: "set_trade_0.5" }],
+                    [{ text: "🔙 Назад", callback_data: "settings" }]
+                ]};
+                await editMessage(chatId, messageId, `💸 <b>Обери суму для однієї покупки:</b>`, keyboard);
             }
             
-            // 6. ПІДМЕНЮ: Зміна Take-Profit
             else if (data === 'edit_tp') {
-                const text = `📈 <b>Обери відсоток прибутку (Take-Profit):</b>\n<i>Поточний: +${s.takeProfit}%</i>`;
-                const keyboard = {
-                    inline_keyboard: [
-                        [{ text: "+10%", callback_data: "set_tp_10" }, { text: "+20%", callback_data: "set_tp_20" }],
-                        [{ text: "+50%", callback_data: "set_tp_50" }, { text: "+100%", callback_data: "set_tp_100" }],
-                        [{ text: "🔙 Назад", callback_data: "settings" }]
-                    ]
-                };
-                await editMessage(chatId, messageId, text, keyboard);
+                const keyboard = { inline_keyboard: [
+                    [{ text: "+10%", callback_data: "set_tp_10" }, { text: "+20%", callback_data: "set_tp_20" }],
+                    [{ text: "+50%", callback_data: "set_tp_50" }, { text: "+100%", callback_data: "set_tp_100" }],
+                    [{ text: "🔙 Назад", callback_data: "settings" }]
+                ]};
+                await editMessage(chatId, messageId, `📈 <b>Обери відсоток прибутку (Take-Profit):</b>`, keyboard);
             }
             
-            // 7. ПІДМЕНЮ: Зміна Stop-Loss
             else if (data === 'edit_sl') {
-                const text = `📉 <b>Обери максимально допустимий мінус (Stop-Loss):</b>\n<i>Поточний: -${s.stopLoss}%</i>`;
-                const keyboard = {
-                    inline_keyboard: [
-                        [{ text: "-5%", callback_data: "set_sl_5" }, { text: "-10%", callback_data: "set_sl_10" }],
-                        [{ text: "-15%", callback_data: "set_sl_15" }, { text: "-25%", callback_data: "set_sl_25" }],
-                        [{ text: "🔙 Назад", callback_data: "settings" }]
-                    ]
-                };
-                await editMessage(chatId, messageId, text, keyboard);
+                const keyboard = { inline_keyboard: [
+                    [{ text: "-5%", callback_data: "set_sl_5" }, { text: "-10%", callback_data: "set_sl_10" }],
+                    [{ text: "-15%", callback_data: "set_sl_15" }, { text: "-25%", callback_data: "set_sl_25" }],
+                    [{ text: "🔙 Назад", callback_data: "settings" }]
+                ]};
+                await editMessage(chatId, messageId, `📉 <b>Обери максимально допустимий мінус (Stop-Loss):</b>`, keyboard);
             }
             
-            // 8. ЗБЕРЕЖЕННЯ ОБРАНОГО ВАРІАНТУ
             else if (data.startsWith('set_')) {
-                const parts = data.split('_'); // 'set', 'trade', '0.02'
+                const parts = data.split('_');
                 const settingType = parts[1]; 
                 const value = parseFloat(parts[2]);
                 
@@ -175,21 +207,16 @@ export default async function handler(req, res) {
                 
                 await redis.set(`user_${chatId}`, JSON.stringify(userData));
                 
-                // Повертаємось у меню налаштувань і показуємо оновлені дані
                 const updatedS = userData.settings;
-                const text = `✅ <b>Успішно збережено!</b>\n\n⚙️ <b>Налаштування снайпера:</b>`;
-                const keyboard = {
-                    inline_keyboard: [
-                        [{ text: `💸 Сума покупки: ${updatedS.tradeAmount} SOL`, callback_data: "edit_trade" }],
-                        [{ text: `📈 Take-Profit: +${updatedS.takeProfit}%`, callback_data: "edit_tp" }],
-                        [{ text: `📉 Stop-Loss: -${updatedS.stopLoss}%`, callback_data: "edit_sl" }],
-                        [{ text: "🔙 В головне меню", callback_data: "main_menu" }]
-                    ]
-                };
-                await editMessage(chatId, messageId, text, keyboard);
+                const keyboard = { inline_keyboard: [
+                    [{ text: `💸 Сума: ${updatedS.tradeAmount} SOL`, callback_data: "edit_trade" }],
+                    [{ text: `📈 Take-Profit: +${updatedS.takeProfit}%`, callback_data: "edit_tp" }],
+                    [{ text: `📉 Stop-Loss: -${updatedS.stopLoss}%`, callback_data: "edit_sl" }],
+                    [{ text: "🔙 В головне меню", callback_data: "main_menu" }]
+                ]};
+                await editMessage(chatId, messageId, `✅ <b>Збережено!</b>\n\n⚙️ <b>Налаштування:</b>`, keyboard);
             }
 
-            // Відповідь для Telegram, щоб кнопка не "висіла" натиснутою
             await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ callback_query_id: update.callback_query.id })
