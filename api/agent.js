@@ -94,8 +94,9 @@ export default async function handler(req, res) {
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
-                if (balance < tradeLamports + 5000000) {
-                    userLogs.actions.push(`⚠️ <b>Увага: Недостатньо SOL для покупки!</b>\nНалаштування: ${settings.tradeAmount} SOL.\nБаланс: ${(balance/1e9).toFixed(4)} SOL.`);
+                             if (balance < tradeLamports + 5000000) {
+                    // Якщо грошей немає - ми просто мовчки пропускаємо покупку і нічого не пишемо в чат
+                    // Він просто чекатиме, поки продасться попередня монета
                 } else {
                     const trendRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
                     const trendData = await trendRes.json();
