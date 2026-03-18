@@ -46,7 +46,7 @@ export default async function handler(req, res) {
         if (!userData.isActive) continue;
 
         const wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
-        const settings = userData.settings || { tradeAmount: 0.01, takeProfit: 15, stopLoss: 10 };
+        const settings = userData.settings || { tradeAmount: 0.02, takeProfit: 15, stopLoss: 10 };
         
         userLogs.actions.push(`💼 <b>Гаманець:</b> ${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}`);
         userLogs.actions.push("🔍 <b>Перевірка портфеля:</b>");
@@ -144,7 +144,7 @@ export default async function handler(req, res) {
         const solBalance = await connection.getBalance(wallet.publicKey);
         const solBalanceUi = solBalance / 1e9; 
         let tradeAmountUi = settings.tradeAmount;
-        const canAfford = (solBalanceUi - tradeAmountUi) >= 0.015;
+        const canAfford = (solBalanceUi - tradeAmountUi) >= 0.005;
         
         if (tokenCount >= 3 || !canAfford) {
             userLogs.actions.push(`\n⏸ Нові покупки призупинено. В портфелі: ${tokenCount}/3. \nВільний баланс: ${solBalanceUi.toFixed(3)} SOL.`);
