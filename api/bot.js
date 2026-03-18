@@ -7,10 +7,21 @@ const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mai
 
 async function getSolPrice() {
     try {
-        const res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112');
+        // Спроба 1: Отримати курс через швидке API
+        const res = await fetch('https://api.jup.ag/price/v2?ids=SOL');
         const data = await res.json();
-        return parseFloat(data.data["So11111111111111111111111111111111111111112"].price);
-    } catch(e) { return 180; }
+        return parseFloat(data.data.SOL.price);
+    } catch(e) {
+        try {
+            // Спроба 2: Якщо перше не працює, беремо з CoinGecko
+            const res2 = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+            const data2 = await res2.json();
+            return data2.solana.usd;
+        } catch(err) {
+            // Лише якщо обидва сервіси впали (що буває вкрай рідко)
+            return 140; 
+        }
+    }
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
