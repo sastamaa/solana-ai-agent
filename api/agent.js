@@ -110,13 +110,23 @@ export default async function handler(req, res) {
                             Change 24h: ${pair.priceChange?.h24 || 0}%
                             Rule: You can answer only WAIT or BUY. Give 1 reason.`;
 
-                            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                                          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                                 method: 'POST', headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ model: 'llama3-8b-8192', messages: [{ role: 'user', content: prompt }] })
                             });
                             
                             const groqData = await groqRes.json();
+                            
+                            // БЕЗПЕЧНА ПЕРЕВІРКА ВІДПОВІДІ ШІ
+                            if (!groqData || !groqData.choices || !groqData.choices[0]) {
+                                userLogs.actions.push(`⚠️ <b>ШІ (Groq) тимчасово перевантажений або відхилив запит.</b> Перевірка переноситься на наступний цикл.\n<i>(Можливо, перевищено ліміт безкоштовних запитів)</i>`);
+                                break; 
+                            }
+                            
                             const aiDecision = groqData.choices[0].message.content.trim();
+
+                            if (aiDecision.includes("BUY")) {
+
 
                             if (aiDecision.includes("BUY")) {
                                 const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${p.tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
