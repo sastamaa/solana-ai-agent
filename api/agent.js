@@ -15,10 +15,29 @@ async function sendTelegramMessage(chatId, text, botToken) {
 }
 
 const t = {
-    uk: { rep: "🤖 <b>Звіт Агента:</b>", wal: "💼 <b>Гаманець:</b>", buy: "✅ <b>КУПЛЕНО:</b>", sell: "✅ <b>ПРОДАНО:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in UKRAINIAN." },
-    en: { rep: "🤖 <b>Agent Report:</b>", wal: "💼 <b>Wallet:</b>", buy: "✅ <b>BOUGHT:</b>", sell: "✅ <b>SOLD:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in ENGLISH." },
-    el: { rep: "🤖 <b>Αναφορά AI:</b>", wal: "💼 <b>Πορτοφόλι:</b>", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", inst: "You are an aggressive crypto sniper. Review the token data and answer only BUY or WAIT. Add a short 1-sentence reason in GREEK." }
+    uk: { 
+        rep: "🤖 <b>Звіт Агента:</b>", 
+        wal: "💼 <b>Гаманець:</b>", 
+        buy: "✅ <b>КУПЛЕНО:</b>", 
+        sell: "✅ <b>ПРОДАНО:</b>", 
+        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in UKRAINIAN explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+    },
+    en: { 
+        rep: "🤖 <b>Agent Report:</b>", 
+        wal: "💼 <b>Wallet:</b>", 
+        buy: "✅ <b>BOUGHT:</b>", 
+        sell: "✅ <b>SOLD:</b>", 
+        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in ENGLISH explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+    },
+    el: { 
+        rep: "🤖 <b>Αναφορά AI:</b>", 
+        wal: "💼 <b>Πορτοφόλι:</b>", 
+        buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", 
+        sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", 
+        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in GREEK explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+    }
 };
+
 
 export default async function handler(req, res) {
   try {
