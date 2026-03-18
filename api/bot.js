@@ -8,7 +8,8 @@ const FEE_PERCENT = 0.03;
 const BOT_USERNAME = process.env.BOT_USERNAME || "moneymakersol_bot"; 
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
-const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
+const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
+
 
 async function getSolPrice() {
     try {
