@@ -168,8 +168,12 @@ export default async function handler(req, res) {
                             const fdv = pair.fdv || 0; 
                             const priceChange24h = pair.priceChange?.h24 || 0;
                           
-                            if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
+                                                       if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
                             if (priceChange24h > 200) continue; 
+                            
+                            // НОВИЙ РЯДОК: Перевіряємо, чи ШІ вже відхиляв цей токен нещодавно
+                            const isIgnored = await redis.get(`ignored_token_${p.tokenAddress}`);
+                            if (isIgnored) continue; // Якщо так - пропускаємо і беремо наступний!
 
                             checkedTokens++;
 
@@ -218,12 +222,17 @@ export default async function handler(req, res) {
                                     userLogs.actions.push(`${langDict.buy} ${pair.baseToken.symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break; 
                                 }
-                            } else {
-                                // Якщо ШІ вирішив НЕ купувати, зберігаємо його думку, щоб показати в портфелі!
+                                                        } else {
+                                // Якщо ШІ відхилив монету, записуємо її в "чорний список" на 1 годину, щоб не питати про неї знову
+                                await redis.set(`ignored_token_${p.tokenAddress}`, 'true', { ex: 3600 });
+                                
+                                // Зберігаємо думку для портфеля
                                 let shortAiThought = aiDecision.replace('WAIT', '').trim();
                                 await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\n🧠 <b>Думка ШІ:</b> <i>${shortAiThought}</i>`, { ex: 3600 });
-                                break; // Виходимо з циклу, бо ШІ використав свій ліміт на хвилину
+                                
+                                break; 
                             }
+
                         }
                     }
                 }
