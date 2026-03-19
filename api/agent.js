@@ -157,10 +157,12 @@ export default async function handler(req, res) {
                             const vol = pair.volume?.h24 || 0;
                             const fdv = pair.fdv || 0; 
                             const priceChange24h = pair.priceChange?.h24 || 0;
-                            
-                            // Жорсткий фільтр на стабільність
-                            if (liq < 50000 || vol < 100000 || fdv < 1000000) continue; 
-                            if (priceChange24h > 100) continue; // Без хайпу
+                          
+                         // Шукаємо золоту середину: не сміття, але й не гігантські монети
+if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
+// Дозволяємо ріст до +200%, бо на старті вони швидко ростуть
+if (priceChange24h > 200) continue; 
+
                             
                             checkedTokens++;
 
