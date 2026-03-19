@@ -225,7 +225,7 @@ export default async function handler(req, res) {
                     await redis.del(`state_${chatId}`);
                     await editMessage(chatId, messageId, t[l].welcome(userData.walletAddress, (0.05 * 180).toFixed(2)), getMainMenuKeyboard(l));
                 }
-                               else if (data === 'portfolio') {
+                                  else if (data === 'portfolio') {
                     await editMessage(chatId, messageId, "⏳ <i>Аналізую блокчейн...</i>", { inline_keyboard: [] });
                     const solPrice = await getSolPrice();
                     const balance = await connection.getBalance(new PublicKey(userData.walletAddress));
@@ -235,7 +235,20 @@ export default async function handler(req, res) {
                     let portfolioText = t[l].port_head;
                     portfolioText += `💰 <b>Баланс:</b> ${solUi} SOL (~$${usdBal})\n`;
                     portfolioText += `🟢 <b>ШІ-Агент:</b> Активний\n\n`;
+                    
+                    // --- НОВИЙ БЛОК: ОСТАННІЙ СКАН ---
+                    const lastScan = await redis.get(`last_scan_${chatId}`);
+                    if (lastScan) {
+                        portfolioText += `👀 <b>Активність ШІ:</b>\n${lastScan}\n\n`;
+                    } else {
+                        portfolioText += `👀 <b>Активність ШІ:</b>\n<i>Шукає нові монети на ринку...</i>\n\n`;
+                    }
+                    // ---------------------------------
+
                     portfolioText += `🪙 <b>Куплені токени:</b>\n`;
+                    
+                    // ... (далі йде старий код перевірки куплених токенів)
+
                     
                     let hasTokens = false;
                     try {
