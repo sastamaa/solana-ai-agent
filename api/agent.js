@@ -145,41 +145,41 @@ export default async function handler(req, res) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
                 if (balance >= tradeLamports + 5000000) {
-                    const trendRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
-                    const trendData = await trendRes.json();
-                    
-                    for (const p of trendData) {
-                        if (p.chainId !== 'solana' || p.tokenAddress === solMint) continue;
-                        
-                        const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${p.tokenAddress}`);
-                        const dexData = await dexRes.json();
-                        
-                        if (dexData.pairs && dexData.pairs.length > 0) {
-                            const pair = dexData.pairs[0];
-                            if (pair.baseToken.symbol.toUpperCase() === 'SOL' || pair.baseToken.symbol.toUpperCase() === 'WSOL') continue; 
+// Шукаємо серед токенів з об'ємом, щоб не брати пустишки
+const trendRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
+                   const trendData = await trendRes.json();
+const pairs = trendData.pairs || []; // Отримуємо масив пар
 
-                            const liq = pair.liquidity?.usd || 0;
-                            const vol = pair.volume?.h24 || 0;
-                            const fdv = pair.fdv || 0; 
-                            const priceChange24h = pair.priceChange?.h24 || 0;
-                          
-                            if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
-                            if (priceChange24h > 200) continue; 
-                            
-                            // Перевіряємо чорний список
-                            const isIgnored = await redis.get(`ignored_token_${p.tokenAddress}`);
-                            if (isIgnored) continue; 
+for (const pair of pairs) {
+    if (pair.chainId !== 'solana') continue;
+    if (pair.baseToken.symbol.toUpperCase() === 'SOL' || pair.baseToken.symbol.toUpperCase() === 'WSOL') continue;
 
-                            await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\nЛіквідність: $${Math.round(liq)}\nОб'єм: $${Math.round(vol)}`, { ex: 3600 });
+    const tokenAddress = pair.baseToken.address;
+    if (tokenAddress === solMint) continue;
 
-                            const prompt = `
-                            ${langDict.inst}
-                            Token: ${pair.baseToken.symbol}
-                            Liquidity: $${liq}
-                            Volume 24h: $${vol}
-                            Market Cap (FDV): $${fdv}
-                            Change 24h: ${priceChange24h}%
-                            Rule: You are looking for STABLE tokens. Do not buy high-risk meme coins that pump and dump. Prefer slow, steady growth.`;
+    const liq = pair.liquidity?.usd || 0;
+    const vol = pair.volume?.h24 || 0;
+    const fdv = pair.fdv || 0; 
+    const priceChange24h = pair.priceChange?.h24 || 0;
+  
+    // Наші фільтри: шукаємо стабільність
+    if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
+    if (priceChange24h > 200) continue; 
+    
+    // Перевіряємо чорний список
+    const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
+    if (isIgnored) continue; 
+
+    await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\nЛіквідність: $${Math.round(liq)}\nОб'єм: $${Math.round(vol)}`, { ex: 3600 });
+
+    const prompt = `
+    ${langDict.inst}
+    Token: ${pair.baseToken.symbol}
+    Liquidity: $${liq}
+    Volume 24h: $${vol}
+    Market Cap (FDV): $${fdv}
+    Change 24h: ${priceChange24h}%
+    Rule: You are looking for STABLE tokens. Do not buy high-risk meme coins that pump and dump. Prefer slow, steady growth.`;
 
                             // --- ВИКЛИКАЄМО GROQ ЗАМІСТЬ GEMINI ---
                             const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
