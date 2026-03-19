@@ -5,11 +5,11 @@ import { Redis } from '@upstash/redis';
 
 export const maxDuration = 60; 
 
+// Оновлена функція з кнопками
 async function sendTelegramMessage(chatId, text, botToken) {
   if (!botToken || !chatId) return; 
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   
-  // Додаємо клавіатуру з кнопками до кожного звіту!
   const keyboard = {
     inline_keyboard: [
       [{ text: "📊 Мій Портфель", callback_data: "portfolio" }, { text: "⚙️ Налаштування", callback_data: "settings" }]
@@ -23,11 +23,10 @@ async function sendTelegramMessage(chatId, text, botToken) {
         text: text, 
         parse_mode: 'HTML', 
         disable_web_page_preview: true,
-        reply_markup: keyboard // Ось тут ми прикріплюємо кнопки
+        reply_markup: keyboard
     })
   }).catch(err => console.error(err));
 }
-
 
 const t = {
     uk: { 
@@ -55,13 +54,14 @@ const t = {
 
 export default async function handler(req, res) {
   try {
-    const geminiKey = process.env.GEMINI_API_KEY; 
+    const groqKey = process.env.GROQ_API_KEY; // ТЕПЕР ВИКОРИСТОВУЄМО GROQ
     const jupiterKey = process.env.JUPITER_API_KEY; 
     const redisUrl = process.env.KV_REST_API_URL;
     const redisToken = process.env.KV_REST_API_TOKEN;
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     
-    if (!geminiKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys!");
+    if (!groqKey) throw new Error("Missing GROQ_API_KEY!");
+    if (!jupiterKey || !redisUrl || !redisToken) throw new Error("Missing other API Keys!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
     const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
@@ -95,7 +95,6 @@ export default async function handler(req, res) {
             const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
             const balance = await connection.getBalance(wallet.publicKey);
             
-            // --- БЛОК 1: ПЕРЕВІРКА І АВТОМАТИЧНИЙ ПРОДАЖ ---
             for (const acc of accounts.value) {
                 const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
                 const mintAddress = acc.account.data.parsed.info.mint;
@@ -142,17 +141,13 @@ export default async function handler(req, res) {
                 }
             }
 
-            // --- БЛОК 2: ПОШУК ТА ПОКУПКА НОВОЇ МОНЕТИ ---
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
-                if (balance < tradeLamports + 5000000) {
-                    // Грошей немає - мовчимо
-                } else {
+                if (balance >= tradeLamports + 5000000) {
                     const trendRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
                     const trendData = await trendRes.json();
                     
-                    let checkedTokens = 0;
                     for (const p of trendData) {
                         if (p.chainId !== 'solana' || p.tokenAddress === solMint) continue;
                         
@@ -168,16 +163,13 @@ export default async function handler(req, res) {
                             const fdv = pair.fdv || 0; 
                             const priceChange24h = pair.priceChange?.h24 || 0;
                           
-                                                       if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
+                            if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
                             if (priceChange24h > 200) continue; 
                             
-                            // НОВИЙ РЯДОК: Перевіряємо, чи ШІ вже відхиляв цей токен нещодавно
+                            // Перевіряємо чорний список
                             const isIgnored = await redis.get(`ignored_token_${p.tokenAddress}`);
-                            if (isIgnored) continue; // Якщо так - пропускаємо і беремо наступний!
+                            if (isIgnored) continue; 
 
-                            checkedTokens++;
-
-                            // --- ЗБЕРІГАЄМО ТОКЕН ЯК ОСТАННІЙ СКАН (ще до відповіді ШІ) ---
                             await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\nЛіквідність: $${Math.round(liq)}\nОб'єм: $${Math.round(vol)}`, { ex: 3600 });
 
                             const prompt = `
@@ -189,17 +181,28 @@ export default async function handler(req, res) {
                             Change 24h: ${priceChange24h}%
                             Rule: You are looking for STABLE tokens. Do not buy high-risk meme coins that pump and dump. Prefer slow, steady growth.`;
 
-                            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
-                                method: 'POST', 
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
+                            // --- ВИКЛИКАЄМО GROQ ЗАМІСТЬ GEMINI ---
+                            const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                                method: 'POST',
+                                headers: {
+                                    'Authorization': `Bearer ${groqKey}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    model: "llama3-70b-8192", 
+                                    messages: [
+                                        { role: "system", content: "You are an expert crypto trader." },
+                                        { role: "user", content: prompt }
+                                    ],
+                                    temperature: 0.2
+                                })
                             });
                             
-                            const geminiData = await geminiRes.json();
+                            const groqData = await groqRes.json();
                             
-                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0]) break; 
+                            if (!groqData.choices || !groqData.choices[0] || !groqData.choices[0].message) break;
                             
-                            const aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
+                            const aiDecision = groqData.choices[0].message.content.trim();
 
                             if (aiDecision.includes("BUY")) {
                                 const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${p.tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
@@ -215,24 +218,18 @@ export default async function handler(req, res) {
                                     const txid = await connection.sendRawTransaction(transaction.serialize());
                                     
                                     await redis.set(`buy_price_${p.tokenAddress}_${chatId}`, pair.priceUsd);
-                                    
-                                    // Оновлюємо статус в портфелі на УСПІШНУ покупку
                                     await redis.set(`last_scan_${chatId}`, `✅ <b>Куплено:</b> ${pair.baseToken.symbol}!\nШІ очікує прибутку.`, { ex: 3600 });
                                     
                                     userLogs.actions.push(`${langDict.buy} ${pair.baseToken.symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break; 
                                 }
-                                                        } else {
-                                // Якщо ШІ відхилив монету, записуємо її в "чорний список" на 1 годину, щоб не питати про неї знову
+                            } else {
+                                // Заносимо в чорний список і зберігаємо лог
                                 await redis.set(`ignored_token_${p.tokenAddress}`, 'true', { ex: 3600 });
-                                
-                                // Зберігаємо думку для портфеля
                                 let shortAiThought = aiDecision.replace('WAIT', '').trim();
                                 await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\n🧠 <b>Думка ШІ:</b> <i>${shortAiThought}</i>`, { ex: 3600 });
-                                
                                 break; 
                             }
-
                         }
                     }
                 }
