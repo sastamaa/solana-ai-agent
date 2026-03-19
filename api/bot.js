@@ -317,9 +317,16 @@ export default async function handler(req, res) {
                 else if (data === 'choose_lang') {
                     await editMessage(chatId, messageId, "🌐 <b>Choose your language:</b>", langKeyboard);
                 }
-                else if (data === 'edit_trade') {
-                    const keyboard = { inline_keyboard: [[{ text: `0.02 SOL`, callback_data: "set_trade_0.02" }, { text: `0.05 SOL`, callback_data: "set_trade_0.05" }], [{ text: `0.1 SOL`, callback_data: "set_trade_0.1" }, { text: `0.5 SOL`, callback_data: "set_trade_0.5" }], [{ text: t[l].btns.back, callback_data: "settings" }]]};
-                    await editMessage(chatId, messageId, "💸", keyboard);
+                        else if (data === 'edit_trade') {
+                    const keyboard = { 
+                        inline_keyboard: [
+                            [{ text: `0.005 SOL`, callback_data: "set_trade_0.005" }, { text: `0.01 SOL`, callback_data: "set_trade_0.01" }],
+                            [{ text: `0.02 SOL`, callback_data: "set_trade_0.02" }, { text: `0.05 SOL`, callback_data: "set_trade_0.05" }], 
+                            [{ text: `0.1 SOL`, callback_data: "set_trade_0.1" }, { text: `0.5 SOL`, callback_data: "set_trade_0.5" }], 
+                            [{ text: t[l].btns.back, callback_data: "settings" }]
+                        ]
+                    };
+                    await editMessage(chatId, messageId, "💸 <b>Оберіть суму для однієї покупки:</b>", keyboard);
                 }
                 else if (data === 'edit_tp') {
                     const keyboard = { inline_keyboard: [[{ text: "+10%", callback_data: "set_tp_10" }, { text: "+20%", callback_data: "set_tp_20" }], [{ text: "+50%", callback_data: "set_tp_50" }, { text: "+100%", callback_data: "set_tp_100" }], [{ text: t[l].btns.back, callback_data: "settings" }]]};
