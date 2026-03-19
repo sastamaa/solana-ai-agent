@@ -20,21 +20,21 @@ const t = {
         wal: "💼 <b>Гаманець:</b>", 
         buy: "✅ <b>КУПЛЕНО:</b>", 
         sell: "✅ <b>ПРОДАНО:</b>", 
-        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in UKRAINIAN explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 1-2 sentence analysis in UKRAINIAN explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     },
     en: { 
         rep: "🤖 <b>Agent Report:</b>", 
         wal: "💼 <b>Wallet:</b>", 
         buy: "✅ <b>BOUGHT:</b>", 
         sell: "✅ <b>SOLD:</b>", 
-        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in ENGLISH explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 1-2 sentence analysis in ENGLISH explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     },
     el: { 
         rep: "🤖 <b>Αναφορά AI:</b>", 
         wal: "💼 <b>Πορτοφόλι:</b>", 
         buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", 
         sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", 
-        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in GREEK explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 1-2 sentence analysis in GREEK explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     }
 };
 
@@ -71,9 +71,7 @@ export default async function handler(req, res) {
         let wallet;
         try { wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey)); } catch (e) { continue; }
         
-        // Беремо налаштування з бота, або ставимо консервативні дефолтні
         const settings = userData.settings || { tradeAmount: 0.02, takeProfit: 30, stopLoss: 35 };
-        userLogs.actions.push(`${langDict.wal} <code>${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}</code>`);
         
         let soldSomething = false; 
         let activeTokensCount = 0; 
@@ -102,7 +100,6 @@ export default async function handler(req, res) {
                                 const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                 const symbol = dexData.pairs[0].baseToken.symbol;
                                 
-                                // Логіка продажу: якщо досягли TP або SL
                                 if (percentChange >= settings.takeProfit || percentChange <= -settings.stopLoss) {
                                     const reason = percentChange >= settings.takeProfit ? `🎯 Take-Profit (+${percentChange.toFixed(2)}%)` : `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
                                     
@@ -122,13 +119,11 @@ export default async function handler(req, res) {
                                         userLogs.actions.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--; 
-                                    } else {
-                                        userLogs.actions.push(`❌ Помилка продажу ${symbol}: ${quoteData.error}`);
                                     }
                                 }
                             }
                         }
-                    } catch (e) { console.error("Помилка при перевірці ціни продажу", e); }
+                    } catch (e) { console.error("Помилка продажу", e); }
                 }
             }
 
@@ -158,13 +153,13 @@ export default async function handler(req, res) {
                             const fdv = pair.fdv || 0; 
                             const priceChange24h = pair.priceChange?.h24 || 0;
                           
-                         // Шукаємо золоту середину: не сміття, але й не гігантські монети
-if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
-// Дозволяємо ріст до +200%, бо на старті вони швидко ростуть
-if (priceChange24h > 200) continue; 
+                            if (liq < 15000 || vol < 30000 || fdv < 100000) continue; 
+                            if (priceChange24h > 200) continue; 
 
-                            
                             checkedTokens++;
+
+                            // --- ЗБЕРІГАЄМО ТОКЕН ЯК ОСТАННІЙ СКАН (ще до відповіді ШІ) ---
+                            await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\nЛіквідність: $${Math.round(liq)}\nОб'єм: $${Math.round(vol)}`, { ex: 3600 });
 
                             const prompt = `
                             ${langDict.inst}
@@ -182,11 +177,6 @@ if (priceChange24h > 200) continue;
                             });
                             
                             const geminiData = await geminiRes.json();
-                            
-                            if (geminiData.error) {
-                                userLogs.actions.push(`⚠️ <b>Помилка Google API:</b> ${geminiData.error.message}`);
-                                break;
-                            }
                             
                             if (!geminiData || !geminiData.candidates || !geminiData.candidates[0]) break; 
                             
@@ -206,9 +196,18 @@ if (priceChange24h > 200) continue;
                                     const txid = await connection.sendRawTransaction(transaction.serialize());
                                     
                                     await redis.set(`buy_price_${p.tokenAddress}_${chatId}`, pair.priceUsd);
+                                    
+                                    // Оновлюємо статус в портфелі на УСПІШНУ покупку
+                                    await redis.set(`last_scan_${chatId}`, `✅ <b>Куплено:</b> ${pair.baseToken.symbol}!\nШІ очікує прибутку.`, { ex: 3600 });
+                                    
                                     userLogs.actions.push(`${langDict.buy} ${pair.baseToken.symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break; 
                                 }
+                            } else {
+                                // Якщо ШІ вирішив НЕ купувати, зберігаємо його думку, щоб показати в портфелі!
+                                let shortAiThought = aiDecision.replace('WAIT', '').trim();
+                                await redis.set(`last_scan_${chatId}`, `🔎 Останній аналіз: <b>${pair.baseToken.symbol}</b>\n🧠 <b>Думка ШІ:</b> <i>${shortAiThought}</i>`, { ex: 3600 });
+                                break; // Виходимо з циклу, бо ШІ використав свій ліміт на хвилину
                             }
                         }
                     }
@@ -216,10 +215,10 @@ if (priceChange24h > 200) continue;
             }
 
         } catch (err) {
-            userLogs.actions.push(`🚨 <b>ПОМИЛКА БОТА:</b>\n<code>${err.message}</code>`);
+            console.error(err);
         }
 
-        if (userLogs.actions.length > 1) {
+        if (userLogs.actions.length > 0) {
             await sendTelegramMessage(chatId, `${langDict.rep}\n\n` + userLogs.actions.join('\n\n'), botToken);
         }
     }
