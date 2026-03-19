@@ -20,24 +20,23 @@ const t = {
         wal: "💼 <b>Гаманець:</b>", 
         buy: "✅ <b>КУПЛЕНО:</b>", 
         sell: "✅ <b>ПРОДАНО:</b>", 
-        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in UKRAINIAN explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in UKRAINIAN explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     },
     en: { 
         rep: "🤖 <b>Agent Report:</b>", 
         wal: "💼 <b>Wallet:</b>", 
         buy: "✅ <b>BOUGHT:</b>", 
         sell: "✅ <b>SOLD:</b>", 
-        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in ENGLISH explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in ENGLISH explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     },
     el: { 
         rep: "🤖 <b>Αναφορά AI:</b>", 
         wal: "💼 <b>Πορτοφόλι:</b>", 
         buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", 
         sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>", 
-        inst: "You are an expert crypto sniper AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in GREEK explaining your decision. Mention liquidity, volume, and momentum. Format it beautifully with emojis." 
+        inst: "You are an expert, conservative crypto trader AI. Analyze the token data. Answer with either 'BUY' or 'WAIT'. Then, add a new line and provide a detailed, professional 2-3 sentence analysis in GREEK explaining your decision. Focus on stability, liquidity, and safe growth. Format it beautifully with emojis." 
     }
 };
-
 
 export default async function handler(req, res) {
   try {
@@ -47,7 +46,7 @@ export default async function handler(req, res) {
     const redisToken = process.env.KV_REST_API_TOKEN;
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     
-    if (!geminiKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys (Check GEMINI_API_KEY)!");
+    if (!geminiKey || !jupiterKey || !redisUrl || !redisToken) throw new Error("Missing API Keys!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
     const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
@@ -72,7 +71,8 @@ export default async function handler(req, res) {
         let wallet;
         try { wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey)); } catch (e) { continue; }
         
-        const settings = userData.settings || { tradeAmount: 0.02, takeProfit: 20, stopLoss: 15 };
+        // Беремо налаштування з бота, або ставимо консервативні дефолтні
+        const settings = userData.settings || { tradeAmount: 0.02, takeProfit: 30, stopLoss: 35 };
         userLogs.actions.push(`${langDict.wal} <code>${userData.walletAddress.substring(0, 4)}...${userData.walletAddress.slice(-4)}</code>`);
         
         let soldSomething = false; 
@@ -82,21 +82,62 @@ export default async function handler(req, res) {
             const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
             const balance = await connection.getBalance(wallet.publicKey);
             
+            // --- БЛОК 1: ПЕРЕВІРКА І АВТОМАТИЧНИЙ ПРОДАЖ ---
             for (const acc of accounts.value) {
                 const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
                 const mintAddress = acc.account.data.parsed.info.mint;
                 
                 if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
                     activeTokensCount++; 
+                    
+                    try {
+                        const buyPriceStr = await redis.get(`buy_price_${mintAddress}_${chatId}`);
+                        if (buyPriceStr) {
+                            const buyPrice = parseFloat(buyPriceStr);
+                            const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
+                            const dexData = await dexRes.json();
+                            
+                            if (dexData.pairs && dexData.pairs.length > 0) {
+                                const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
+                                const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
+                                const symbol = dexData.pairs[0].baseToken.symbol;
+                                
+                                // Логіка продажу: якщо досягли TP або SL
+                                if (percentChange >= settings.takeProfit || percentChange <= -settings.stopLoss) {
+                                    const reason = percentChange >= settings.takeProfit ? `🎯 Take-Profit (+${percentChange.toFixed(2)}%)` : `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
+                                    
+                                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`, { headers: jupHeaders });
+                                    const quoteData = await quoteRes.json();
+                                    
+                                    if (!quoteData.error) {
+                                        const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', { method: 'POST', headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
+                                        const swapData = await swapRes.json();
+                                        
+                                        const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
+                                        const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                                        transaction.sign([wallet]);
+                                        const txid = await connection.sendRawTransaction(transaction.serialize());
+                                        
+                                        await redis.del(`buy_price_${mintAddress}_${chatId}`);
+                                        userLogs.actions.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                                        soldSomething = true;
+                                        activeTokensCount--; 
+                                    } else {
+                                        userLogs.actions.push(`❌ Помилка продажу ${symbol}: ${quoteData.error}`);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) { console.error("Помилка при перевірці ціни продажу", e); }
                 }
             }
 
+            // --- БЛОК 2: ПОШУК ТА ПОКУПКА НОВОЇ МОНЕТИ ---
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
-                             if (balance < tradeLamports + 5000000) {
-                    // Якщо грошей немає - ми просто мовчки пропускаємо покупку і нічого не пишемо в чат
-                    // Він просто чекатиме, поки продасться попередня монета
+                if (balance < tradeLamports + 5000000) {
+                    // Грошей немає - мовчимо
                 } else {
                     const trendRes = await fetch('https://api.dexscreener.com/token-profiles/latest/v1');
                     const trendData = await trendRes.json();
@@ -114,8 +155,12 @@ export default async function handler(req, res) {
 
                             const liq = pair.liquidity?.usd || 0;
                             const vol = pair.volume?.h24 || 0;
+                            const fdv = pair.fdv || 0; 
+                            const priceChange24h = pair.priceChange?.h24 || 0;
                             
-                            if (liq < 5000 || vol < 10000) continue; 
+                            // Жорсткий фільтр на стабільність
+                            if (liq < 50000 || vol < 100000 || fdv < 1000000) continue; 
+                            if (priceChange24h > 100) continue; // Без хайпу
                             
                             checkedTokens++;
 
@@ -124,19 +169,14 @@ export default async function handler(req, res) {
                             Token: ${pair.baseToken.symbol}
                             Liquidity: $${liq}
                             Volume 24h: $${vol}
-                            Change 24h: ${pair.priceChange?.h24 || 0}%
-                            Rule: Meme coins grow fast. A 24h change up to 300% is NORMAL if volume is high!`;
+                            Market Cap (FDV): $${fdv}
+                            Change 24h: ${priceChange24h}%
+                            Rule: You are looking for STABLE tokens. Do not buy high-risk meme coins that pump and dump. Prefer slow, steady growth.`;
 
-                            // --- ВИКОРИСТОВУЄМО НОВУ МОДЕЛЬ GEMINI 2.5 FLASH ---
                             const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
                                 method: 'POST', 
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ 
-                                    contents: [{ 
-                                        role: "user",
-                                        parts: [{ text: prompt }] 
-                                    }] 
-                                })
+                                body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
                             });
                             
                             const geminiData = await geminiRes.json();
@@ -146,10 +186,7 @@ export default async function handler(req, res) {
                                 break;
                             }
                             
-                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0] || !geminiData.candidates[0].content) {
-                                userLogs.actions.push(`⚠️ <b>ШІ не дав відповіді.</b> Можливо, блокування контенту.`);
-                                break; 
-                            }
+                            if (!geminiData || !geminiData.candidates || !geminiData.candidates[0]) break; 
                             
                             const aiDecision = geminiData.candidates[0].content.parts[0].text.trim();
 
@@ -169,22 +206,15 @@ export default async function handler(req, res) {
                                     await redis.set(`buy_price_${p.tokenAddress}_${chatId}`, pair.priceUsd);
                                     userLogs.actions.push(`${langDict.buy} ${pair.baseToken.symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break; 
-                                } else {
-                                    userLogs.actions.push(`❌ Jupiter відхилив своп для ${pair.baseToken.symbol}: ${quoteData.error}`);
-                                    break;
                                 }
-                            } else {
-                                userLogs.actions.push(`🔎 <b>Сканування:</b> ${pair.baseToken.symbol}\n🧠 <b>Думка ШІ:</b> ${aiDecision}`);
-                                break; 
                             }
                         }
                     }
-                    if (checkedTokens === 0) userLogs.actions.push(`⚠️ Не знайдено токенів на DexScreener з достатнім об'ємом.`);
                 }
             }
 
         } catch (err) {
-            userLogs.actions.push(`🚨 <b>КРИТИЧНА ПОМИЛКА БОТА:</b>\n<code>${err.message}</code>`);
+            userLogs.actions.push(`🚨 <b>ПОМИЛКА БОТА:</b>\n<code>${err.message}</code>`);
         }
 
         if (userLogs.actions.length > 1) {
