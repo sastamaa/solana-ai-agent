@@ -8,11 +8,26 @@ export const maxDuration = 60;
 async function sendTelegramMessage(chatId, text, botToken) {
   if (!botToken || !chatId) return; 
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  
+  // Додаємо клавіатуру з кнопками до кожного звіту!
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: "📊 Мій Портфель", callback_data: "portfolio" }, { text: "⚙️ Налаштування", callback_data: "settings" }]
+    ]
+  };
+
   await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true })
+    body: JSON.stringify({ 
+        chat_id: chatId, 
+        text: text, 
+        parse_mode: 'HTML', 
+        disable_web_page_preview: true,
+        reply_markup: keyboard // Ось тут ми прикріплюємо кнопки
+    })
   }).catch(err => console.error(err));
 }
+
 
 const t = {
     uk: { 
