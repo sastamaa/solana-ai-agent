@@ -298,7 +298,7 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     break;
                                     
                                 } else {
-                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
+await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 1800 });
                                     const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
                                         `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
                                         (analysis ? `${analysis}\n` : "") +
