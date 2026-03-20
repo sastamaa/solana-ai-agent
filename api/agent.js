@@ -80,7 +80,7 @@ export default async function handler(req, res) {
             );
             const balance = await connection.getBalance(wallet.publicKey);
             
-            // ЕТАП 1: ПРОДАЖ
+            // ============ ЕТАП 1: ПРОДАЖ ============
             for (const acc of accounts.value) {
                 const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
                 const mintAddress = acc.account.data.parsed.info.mint;
@@ -138,7 +138,7 @@ export default async function handler(req, res) {
                 }
             }
 
-            // ЕТАП 2: ПОКУПКА
+            // ============ ЕТАП 2: ПОКУПКА ============
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
@@ -152,22 +152,21 @@ export default async function handler(req, res) {
                         await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
                     } else {
                         try {
-                            // Отримуємо пари з 4 джерел — ширше покриття ринку
                             const [res1, res2, res3, res4, res5, res6] = await Promise.all([
-    fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=trump&rankBy=trendingScoreH6&order=desc")
-]);
-const [d1, d2, d3, d4, d5, d6] = await Promise.all([
-    res1.json(), res2.json(), res3.json(), res4.json(), res5.json(), res6.json()
-]);
-const allPairs = [
-    ...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[]),
-    ...(d4.pairs||[]), ...(d5.pairs||[]), ...(d6.pairs||[])
-];
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=trump&rankBy=trendingScoreH6&order=desc")
+                            ]);
+                            const [d1, d2, d3, d4, d5, d6] = await Promise.all([
+                                res1.json(), res2.json(), res3.json(), res4.json(), res5.json(), res6.json()
+                            ]);
+                            const allPairs = [
+                                ...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[]),
+                                ...(d4.pairs||[]), ...(d5.pairs||[]), ...(d6.pairs||[])
+                            ];
                             const seen = new Set();
                             const pairs = allPairs.filter(p => {
                                 if (!p.pairAddress || seen.has(p.pairAddress)) return false;
@@ -194,8 +193,7 @@ const allPairs = [
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
                                 
-                                // Розширені фільтри
-if (liq < 1000 || vol < 500 || fdv < 1000) { skippedLiq++; continue; }
+                                if (liq < 1000 || vol < 500 || fdv < 1000) { skippedLiq++; continue; }
                                 if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
@@ -236,8 +234,8 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     method: "POST",
                                     headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
                                     body: JSON.stringify({ 
-model: "llama-3.3-70b-versatile",
-                                      messages: [{ role: "user", content: prompt }], 
+                                        model: "llama-3.3-70b-versatile",
+                                        messages: [{ role: "user", content: prompt }], 
                                         temperature: 0.1 
                                     })
                                 });
@@ -258,7 +256,7 @@ model: "llama-3.3-70b-versatile",
                                 const reason = reasonMatch ? reasonMatch[1].trim() : "";
                                 const analysis = analysisMatch ? analysisMatch[1].trim() : "";
 
-                                if (aiDecision.toUpperCase().startsWith("BUY")) {
+                                if (aiDecision.toUpperCase().includes("DECISION: BUY")) {
                                     const quoteRes = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=150`, 
                                         { headers: jupHeaders }
@@ -306,7 +304,7 @@ model: "llama-3.3-70b-versatile",
                                         (analysis ? `${analysis}\n` : "") +
                                         `🧠 <i>${reason}</i>`;
                                     await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
-                                    continue; // Шукаємо далі!
+                                    continue;
                                 }
                             }
 
