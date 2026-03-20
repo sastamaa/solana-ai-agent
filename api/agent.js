@@ -150,7 +150,7 @@ export default async function handler(req, res) {
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
                                     headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-                                    body: JSON.stringify({ model: "llama3-8b-8192", messages: [{ role: "user", content: prompt }], temperature: 0.1 })
+                                    body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "user", content: prompt }], temperature: 0.1 })
                                 });
                                 const groqData = await groqRes.json();
 
