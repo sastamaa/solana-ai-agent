@@ -262,10 +262,16 @@ export default async function handler(req, res) {
                             // Показуємо ВСІ токени, окрім основної Solana, якщо їх кількість більше 0
                             if (amountInfo.uiAmount > 0 && mint !== solMint) {
                                 hasTokens = true;
-                                const buyPriceStr = await redis.get(`buy_price_${mint}_${chatId}`);
-                                let pnlInfo = "<i>Аналіз ціни...</i>";
-                                let tokenName = `${mint.substring(0, 4)}...${mint.slice(-4)}`; // За замовчуванням показуємо адресу
-                                
+const buyPriceStr = await redis.get(`buy_price_${mint}_${chatId}`);
+// Резервно шукаємо через token_info
+const tokenInfoStr = await redis.get(`token_info_${mint}_${chatId}`);
+const tokenInfo = tokenInfoStr ? (typeof tokenInfoStr === 'string' ? JSON.parse(tokenInfoStr) : tokenInfoStr) : null;
+
+let pnlInfo = "<i>Аналіз ціни...</i>";
+let tokenName = `${mint.substring(0, 4)}...${mint.slice(-4)}`;
+
+// Якщо є збережена назва — використовуємо її одразу без DexScreener
+if (tokenInfo) tokenName = tokenInfo.symbol;                             
                                 try {
                                     const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
                                     const dexData = await dexRes.json();
