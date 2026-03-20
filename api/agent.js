@@ -27,19 +27,9 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
-// Блокуємо тільки ТОЧНІ співпадіння імен великих монет (не підрядки)
-const BANNED_SYMBOLS = [
-    "SOL","WSOL","USDC","USDT","WBTC"
-];
-
-// Окремо блокуємо підрядки щоб не купити підробки під великі монети
-const BANNED_SUBSTRINGS = [
-    "SOLANA","WRAPPED","BITCOIN","ETHEREUM"
-];
-
-const BANNED_ADDRESSES = [
-    "De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump",
-];
+const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC"];
+const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM"];
+const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
 
 export default async function handler(req, res) {
   try {
@@ -134,11 +124,9 @@ export default async function handler(req, res) {
                                             skipPreflight: true, maxRetries: 5 
                                         });
                                         await new Promise(resolve => setTimeout(resolve, 2000));
-                                        
                                         await redis.del(`buy_price_${mintAddress}_${chatId}`);
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
-                                        
                                         userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--;
@@ -164,28 +152,30 @@ export default async function handler(req, res) {
                         await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
                     } else {
                         try {
-                            // ДІАГНОСТИКА: отримуємо пари
-// Отримуємо пари з 3 різних джерел і об'єднуємо
-const [res1, res2, res3] = await Promise.all([
-    fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=pepe&rankBy=trendingScoreH6&order=desc")
-]);
-const [d1, d2, d3] = await Promise.all([res1.json(), res2.json(), res3.json()]);
+                            // Отримуємо пари з 4 джерел — ширше покриття ринку
+                            const [res1, res2, res3, res4] = await Promise.all([
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc")
+                            ]);
+                            const [d1, d2, d3, d4] = await Promise.all([
+                                res1.json(), res2.json(), res3.json(), res4.json()
+                            ]);
 
-// Об'єднуємо і прибираємо дублікати за адресою
-const allPairs = [...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[])];
-const seen = new Set();
-const pairs = allPairs.filter(p => {
-    if (seen.has(p.pairAddress)) return false;
-    seen.add(p.pairAddress);
-    return true;
-});
+                            const allPairs = [
+                                ...(d1.pairs||[]), ...(d2.pairs||[]),
+                                ...(d3.pairs||[]), ...(d4.pairs||[])
+                            ];
+                            const seen = new Set();
+                            const pairs = allPairs.filter(p => {
+                                if (!p.pairAddress || seen.has(p.pairAddress)) return false;
+                                seen.add(p.pairAddress);
+                                return true;
+                            });
 
-await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар з 3 джерел. Фільтруємо...`, { ex: 3600 });
-
-                            let skippedChain = 0, skippedSymbol = 0, skippedAddress = 0;
-                            let skippedLiq = 0, skippedPump = 0, foundCandidate = false;
+                            let skippedChain = 0, skippedSymbol = 0, skippedLiq = 0;
+                            let skippedPump = 0, skippedIgnored = 0, foundCandidate = false;
                             
                             for (const pair of pairs) {
                                 if (pair.chainId !== "solana") { skippedChain++; continue; }
@@ -193,9 +183,9 @@ await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар
                                 const sym = pair.baseToken.symbol.toUpperCase();
                                 const tokenAddress = pair.baseToken.address;
                                 
-if (BANNED_SYMBOLS.includes(sym)) { skippedSymbol++; continue; }
-if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continue; }
-                                if (BANNED_ADDRESSES.includes(tokenAddress)) { skippedAddress++; continue; }
+                                if (BANNED_SYMBOLS.includes(sym)) { skippedSymbol++; continue; }
+                                if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continue; }
+                                if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
                                 if (tokenAddress === solMint) continue;
                                 
                                 const liq = pair.liquidity?.usd || 0;
@@ -203,16 +193,16 @@ if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continu
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
                                 
-                             if (liq < 5000 || vol < 5000 || fdv < 10000) { skippedLiq++; continue; }
-if (priceChange24h > 300) { skippedPump++; continue; }
+                                // Розширені фільтри
+                                if (liq < 3000 || vol < 3000 || fdv < 5000) { skippedLiq++; continue; }
+                                if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
-                                if (isIgnored) continue;
+                                if (isIgnored) { skippedIgnored++; continue; }
 
-                                // Знайшли кандидата — йдемо до Groq
                                 foundCandidate = true;
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq)} | Об'єм: $${Math.round(vol)}\n📊 Відфільтровано: інші мережі=${skippedChain}, символи=${skippedSymbol}, ліквідність=${skippedLiq}, памп=${skippedPump}`, 
+                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${(vol/fdv*100).toFixed(1)}% | Зміна: ${priceChange24h}%`, 
                                     { ex: 3600 }
                                 );
 
@@ -236,19 +226,17 @@ Token data:
 - Price change 24h: ${priceChange24h}%
 
 Rules: BUY only if score >= 6.
-Liquidity minimum: $5,000 (higher is better).
-Volume/MCap minimum: 2% (higher is better).
-Avoid tokens with price change below -20% in 24h (strong downtrend).
-Avoid tokens with price change over 300% in 24h (pump and dump).
-Good signs: stable or rising price, healthy liquidity above $50k, volume growing.
-IMPORTANT: $1M+ liquidity is EXCELLENT not low. 4%+ Vol/MCap is GOOD not bad.`;
+Liquidity minimum: $3,000 (higher is better, $50k+ is excellent).
+Volume/MCap minimum: 2% (higher is better, 10%+ is excellent).
+Avoid tokens with price change below -50% or above +300% in 24h.
+IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol/MCap is GOOD. 10%+ Vol/MCap is EXCELLENT.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
                                     headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
                                     body: JSON.stringify({ 
-model: "llama-3.1-8b-instant",
-                                      messages: [{ role: "user", content: prompt }], 
+                                        model: "llama-3.1-8b-instant",
+                                        messages: [{ role: "user", content: prompt }], 
                                         temperature: 0.1 
                                     })
                                 });
@@ -262,6 +250,12 @@ model: "llama-3.1-8b-instant",
                                 if (!groqData.choices || !groqData.choices[0]) break;
 
                                 const aiDecision = groqData.choices[0].message.content.trim();
+                                const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
+                                const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
+                                const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
+                                const score = scoreMatch ? scoreMatch[1] : "?";
+                                const reason = reasonMatch ? reasonMatch[1].trim() : "";
+                                const analysis = analysisMatch ? analysisMatch[1].trim() : "";
 
                                 if (aiDecision.toUpperCase().startsWith("BUY")) {
                                     const quoteRes = await fetch(
@@ -269,78 +263,55 @@ model: "llama-3.1-8b-instant",
                                         { headers: jupHeaders }
                                     );
                                     const quoteData = await quoteRes.json();
-                                    
                                     if (quoteData.error) {
                                         await redis.set(`last_scan_${chatId}`, `❌ Jupiter не зміг купити ${sym}`, { ex: 3600 });
                                         break;
                                     }
-                                    
                                     const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
                                         method: "POST", headers: jupHeaders, 
                                         body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
                                     });
                                     const swapData = await swapRes.json();
-                                    
                                     if (!swapData.swapTransaction) {
                                         await redis.set(`last_scan_${chatId}`, `❌ Транзакція не створена для ${sym}`, { ex: 3600 });
                                         break;
                                     }
-                                    
                                     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
                                     const { blockhash } = await connection.getLatestBlockhash("finalized");
                                     transaction.message.recentBlockhash = blockhash;
                                     transaction.sign([wallet]);
-                                    
                                     const txid = await connection.sendRawTransaction(transaction.serialize(), { 
                                         skipPreflight: true, maxRetries: 5 
                                     });
                                     await new Promise(resolve => setTimeout(resolve, 2000));
-                                    
                                     const priceToSave = (pair.priceUsd || "0.000001").toString();
                                     await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
                                     await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
-                                        symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid: txid
+                                        symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid
                                     }), { ex: 86400 });
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
-const scoreMatchB = aiDecision.match(/SCORE:\s*(\d+)/i);
-const reasonMatchB = aiDecision.match(/REASON:\s*(.+)/i);
-const scoreB = scoreMatchB ? scoreMatchB[1] : "?";
-const reasonB = reasonMatchB ? reasonMatchB[1].trim() : "";
-
-await redis.set(`last_scan_${chatId}`, 
-    `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${scoreB}/10\n🧠 <i>${reasonB}</i>`, 
-    { ex: 3600 }
-);
-userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${scoreB}/10\n🧠 <i>${reasonB}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                                    await redis.set(`last_scan_${chatId}`, 
+                                        `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>`, 
+                                        { ex: 3600 }
+                                    );
+                                    userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
-                              } else {
-    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
-    
-    const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
-    const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
-    const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
-    
-    const score = scoreMatch ? scoreMatch[1] : "?";
-    const reason = reasonMatch ? reasonMatch[1].trim() : aiDecision;
-    const analysis = analysisMatch ? analysisMatch[1].trim() : "";
-    
-    const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
-        `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
-        (analysis ? `${analysis}\n` : "") +
-        `🧠 <i>${reason}</i>`;
-    
-    await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
-    // НЕ break — продовжуємо шукати наступну монету!
-    continue;
-}
+                                } else {
+                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
+                                    const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
+                                        `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
+                                        (analysis ? `${analysis}\n` : "") +
+                                        `🧠 <i>${reason}</i>`;
+                                    await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
+                                    continue; // Шукаємо далі!
+                                }
                             }
 
-                            // Якщо жодного кандидата не знайдено
                             if (!foundCandidate) {
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Ліквідність: ${skippedLiq} | Памп: ${skippedPump}`, 
+                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | В чорному списку: ${skippedIgnored}`, 
                                     { ex: 3600 }
                                 );
                             }
