@@ -160,9 +160,9 @@ export default async function handler(req, res) {
                     } else {
                         try {
                             // ДІАГНОСТИКА: отримуємо пари
-                            const trendRes = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
-                            const trendData = await trendRes.json();
-                            const pairs = trendData.pairs || [];
+const trendRes = await fetch("https://api.dexscreener.com/latest/dex/search?q=SOL&rankBy=trendingScoreH6&order=desc");
+const trendData = await trendRes.json();
+const pairs = trendData.pairs || [];
 
                             await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар. Фільтруємо...`, { ex: 3600 });
 
