@@ -27,6 +27,17 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
+// Заблоковані символи (назви що схожі на великі монети)
+const BANNED_SYMBOLS = [
+    "SOL","WSOL","USDC","USDT","SOLANA","WRAPPED","BITCOIN","BTC",
+    "ETH","ETHEREUM","BNB","WBTC","XRP","ADA","DOGE","SHIB","PEPE"
+];
+
+// Заблоковані адреси конкретних токенів (шахрайські або небажані)
+const BANNED_ADDRESSES = [
+    "De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump", // Pygmy Hippo (SOLANA fake)
+];
+
 export default async function handler(req, res) {
   try {
     const groqKey = process.env.GROQ_API_KEY; 
@@ -39,7 +50,9 @@ export default async function handler(req, res) {
     if (!jupiterKey || !redisUrl || !redisToken) throw new Error("Відсутні API ключі!");
 
     const redis = new Redis({ url: redisUrl, token: redisToken });
-    const connection = new Connection(process.env.SOLANA_RPC_URL || "https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9");
+    const connection = new Connection(
+        process.env.SOLANA_RPC_URL || "https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9"
+    );
     const solMint = "So11111111111111111111111111111111111111112"; 
     const jupHeaders = { "Content-Type": "application/json", "x-api-key": jupiterKey };
 
@@ -68,10 +81,15 @@ export default async function handler(req, res) {
         let activeTokensCount = 0; 
 
         try {
-            const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+            const accounts = await connection.getParsedTokenAccountsByOwner(
+                wallet.publicKey, 
+                { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
+            );
             const balance = await connection.getBalance(wallet.publicKey);
             
-            // ЕТАП 1: ПЕРЕВІРКА ТА ПРОДАЖ
+            // ============================================
+            // ЕТАП 1: ПЕРЕВІРКА КУПЛЕНИХ ТОКЕНІВ І ПРОДАЖ
+            // ============================================
             for (const acc of accounts.value) {
                 const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
                 const mintAddress = acc.account.data.parsed.info.mint;
@@ -88,19 +106,39 @@ export default async function handler(req, res) {
                                 const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
                                 const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                 const symbol = dexData.pairs[0].baseToken.symbol;
+                                
                                 if (percentChange >= settings.takeProfit || percentChange <= -settings.stopLoss) {
-                                    const reason = percentChange >= settings.takeProfit ? `🎯 Take-Profit (+${percentChange.toFixed(2)}%)` : `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
-                                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`, { headers: jupHeaders });
+                                    const reason = percentChange >= settings.takeProfit 
+                                        ? `🎯 Take-Profit (+${percentChange.toFixed(2)}%)` 
+                                        : `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
+                                    
+                                    const quoteRes = await fetch(
+                                        `https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`, 
+                                        { headers: jupHeaders }
+                                    );
                                     const quoteData = await quoteRes.json();
+                                    
                                     if (!quoteData.error) {
-                                        const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { method: "POST", headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
+                                        const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
+                                            method: "POST", headers: jupHeaders, 
+                                            body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
+                                        });
                                         const swapData = await swapRes.json();
                                         const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                                        
+                                        // Свіжий blockhash перед підписом
+                                        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+                                        transaction.message.recentBlockhash = blockhash;
                                         transaction.sign([wallet]);
-                                        const txid = await connection.sendRawTransaction(transaction.serialize());
+                                        
+                                        const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false, maxRetries: 3 });
+                                        await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, "confirmed");
+                                        
                                         await redis.del(`buy_price_${mintAddress}_${chatId}`);
+                                        await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
+                                        
                                         userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--;
@@ -112,13 +150,16 @@ export default async function handler(req, res) {
                 }
             }
 
-            // ЕТАП 2: ПОШУК І ПОКУПКА
+            // ============================================
+            // ЕТАП 2: ПОШУК І ПОКУПКА НОВОЇ МОНЕТИ
+            // ============================================
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
                 if (balance < tradeLamports + 5000000) {
                     await redis.set(`last_scan_${chatId}`, "⚠️ Недостатньо SOL. Поповніть гаманець.", { ex: 3600 });
                 } else {
+                    // Захист від подвійної покупки
                     const recentBuy = await redis.get(`active_buy_${chatId}`);
                     if (recentBuy) {
                         await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження блокчейну...", { ex: 300 });
@@ -130,27 +171,55 @@ export default async function handler(req, res) {
                             
                             for (const pair of pairs) {
                                 if (pair.chainId !== "solana") continue;
+                                
                                 const sym = pair.baseToken.symbol.toUpperCase();
-                                if (["SOL","WSOL","USDC","USDT"].includes(sym)) continue;
                                 const tokenAddress = pair.baseToken.address;
+                                
+                                // Фільтр 1: Заблоковані символи
+                                if (BANNED_SYMBOLS.some(banned => sym.includes(banned))) continue;
+                                
+                                // Фільтр 2: Заблоковані адреси
+                                if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
+                                
+                                // Фільтр 3: Системна адреса SOL
                                 if (tokenAddress === solMint) continue;
+                                
                                 const liq = pair.liquidity?.usd || 0;
                                 const vol = pair.volume?.h24 || 0;
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
+                                
+                                // Фільтр 4: Мінімальні показники
                                 if (liq < 10000 || vol < 20000 || fdv < 50000) continue; 
+                                // Фільтр 5: Не беремо токени що вже злетіли на 150%+
                                 if (priceChange24h > 150) continue; 
+                                
+                                // Фільтр 6: Чорний список (вже відхилені ШІ)
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) continue;
 
-                                await redis.set(`last_scan_${chatId}`, `🔎 Аналізую: <b>${sym}</b>\nЛіквідність: $${Math.round(liq)} | Об'єм: $${Math.round(vol)}`, { ex: 3600 });
+                                await redis.set(
+                                    `last_scan_${chatId}`, 
+                                    `🔎 Аналізую: <b>${sym}</b>\nЛіквідність: $${Math.round(liq)} | Об'єм: $${Math.round(vol)}`, 
+                                    { ex: 3600 }
+                                );
 
-                                const prompt = `You are a conservative crypto trader. Answer exactly with BUY or WAIT, then new line, 1-2 sentence explanation in Ukrainian.\nToken: ${sym}\nLiquidity: $${Math.round(liq)}\nVolume 24h: $${Math.round(vol)}\nMarket Cap: $${Math.round(fdv)}\nChange 24h: ${priceChange24h}%\nPrefer stable tokens. Avoid pump and dumps.`;
+                                const prompt = `You are a conservative crypto trader. Answer exactly with BUY or WAIT, then new line, 1-2 sentence explanation in Ukrainian.
+Token: ${sym}
+Liquidity: $${Math.round(liq)}
+Volume 24h: $${Math.round(vol)}
+Market Cap: $${Math.round(fdv)}
+Change 24h: ${priceChange24h}%
+Prefer stable tokens. Avoid pump and dumps. Avoid tokens with names similar to major coins.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
                                     headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-                                    body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "user", content: prompt }], temperature: 0.1 })
+                                    body: JSON.stringify({ 
+                                        model: "llama3-8b-8192", 
+                                        messages: [{ role: "user", content: prompt }], 
+                                        temperature: 0.1 
+                                    })
                                 });
                                 const groqData = await groqRes.json();
 
@@ -164,29 +233,61 @@ export default async function handler(req, res) {
                                 const aiDecision = groqData.choices[0].message.content.trim();
 
                                 if (aiDecision.toUpperCase().startsWith("BUY")) {
-                                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
+                                    const quoteRes = await fetch(
+                                        `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=150`, 
+                                        { headers: jupHeaders }
+                                    );
                                     const quoteData = await quoteRes.json();
+                                    
                                     if (quoteData.error) {
                                         await redis.set(`last_scan_${chatId}`, `❌ Jupiter не зміг купити ${sym}`, { ex: 3600 });
                                         break;
                                     }
-                                    const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { method: "POST", headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
+                                    
+                                    const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
+                                        method: "POST", headers: jupHeaders, 
+                                        body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
+                                    });
                                     const swapData = await swapRes.json();
+                                    
                                     if (!swapData.swapTransaction) {
                                         await redis.set(`last_scan_${chatId}`, `❌ Транзакція не створена для ${sym}`, { ex: 3600 });
                                         break;
                                     }
+                                    
                                     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                                    
+                                    // Свіжий blockhash перед підписом
+                                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+                                    transaction.message.recentBlockhash = blockhash;
                                     transaction.sign([wallet]);
-                                    const txid = await connection.sendRawTransaction(transaction.serialize());
+                                    
+                                    const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false, maxRetries: 3 });
+                                    await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, "confirmed");
+                                    
                                     const priceToSave = (pair.priceUsd || "0.000001").toString();
+                                    
+                                    // Зберігаємо ціну покупки
                                     await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
+                                    
+                                    // Зберігаємо інфо про токен для відображення в портфелі
+                                    await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
+                                        symbol: sym,
+                                        buyPrice: priceToSave,
+                                        buyTime: Date.now(),
+                                        txid: txid
+                                    }), { ex: 86400 });
+                                    
+                                    // Захист від повторної покупки на 5 хвилин
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
+                                    
                                     await redis.set(`last_scan_${chatId}`, `✅ Куплено: <b>${sym}</b>! ШІ очікує прибутку.`, { ex: 3600 });
                                     userLogs.push(`${langDict.buy} ${sym}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
+                                    
                                 } else {
+                                    // Відхилено — додаємо в чорний список на 2 години
                                     await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
                                     const shortThought = aiDecision.replace(/^WAIT/i, "").trim();
                                     await redis.set(`last_scan_${chatId}`, `🔎 Відхилено: <b>${sym}</b>\n🧠 <i>${shortThought}</i>`, { ex: 3600 });
@@ -205,7 +306,11 @@ export default async function handler(req, res) {
         }
 
         if (userLogs.length > 0) {
-            await sendTelegramMessage(chatId, `🤖 <b>${langDict.rep}</b>\n\n` + userLogs.join("\n\n"), botToken);
+            await sendTelegramMessage(
+                chatId, 
+                `🤖 <b>${langDict.rep}</b>\n\n` + userLogs.join("\n\n"), 
+                botToken
+            );
         }
     }
     res.status(200).send("OK");
