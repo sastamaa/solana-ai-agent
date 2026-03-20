@@ -291,8 +291,16 @@ model: "llama-3.1-8b-instant",
                                         symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid: txid
                                     }), { ex: 86400 });
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
-                                    await redis.set(`last_scan_${chatId}`, `✅ Куплено: <b>${sym}</b>! ШІ очікує прибутку.`, { ex: 3600 });
-                                    userLogs.push(`${langDict.buy} ${sym}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+const scoreMatchB = aiDecision.match(/SCORE:\s*(\d+)/i);
+const reasonMatchB = aiDecision.match(/REASON:\s*(.+)/i);
+const scoreB = scoreMatchB ? scoreMatchB[1] : "?";
+const reasonB = reasonMatchB ? reasonMatchB[1].trim() : "";
+
+await redis.set(`last_scan_${chatId}`, 
+    `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${scoreB}/10\n🧠 <i>${reasonB}</i>`, 
+    { ex: 3600 }
+);
+userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${scoreB}/10\n🧠 <i>${reasonB}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
                                } else {
