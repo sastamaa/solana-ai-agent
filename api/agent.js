@@ -160,9 +160,12 @@ export default async function handler(req, res) {
                     await redis.set(`last_scan_${chatId}`, "⚠️ Недостатньо SOL. Поповніть гаманець.", { ex: 3600 });
                 } else {
                     // Захист від подвійної покупки
-                    const recentBuy = await redis.get(`active_buy_${chatId}`);
-                    if (recentBuy) {
-                        await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження блокчейну...", { ex: 300 });
+                   const recentBuy = await redis.get(`active_buy_${chatId}`);
+if (recentBuy && activeTokensCount === 0) {
+    // Токена немає в гаманці — флаг застряг, очищаємо автоматично
+    await redis.del(`active_buy_${chatId}`);
+} else if (recentBuy) {
+    await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження блокчейну...", { ex: 300 });
                     } else {
                         try {
                             const trendRes = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
