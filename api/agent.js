@@ -235,11 +235,13 @@ Token data:
 - Vol/MCap ratio: ${(vol/fdv*100).toFixed(1)}%
 - Price change 24h: ${priceChange24h}%
 
-Rules: BUY only if score >= 7. 
-Liquidity minimum: $5,000. 
-Volume/MCap minimum: 3%. 
-Avoid tokens with price change over 300% in 24h.
-Good signs: growing volume, healthy liquidity, stable or rising price.`;
+Rules: BUY only if score >= 6.
+Liquidity minimum: $5,000 (higher is better).
+Volume/MCap minimum: 2% (higher is better).
+Avoid tokens with price change below -20% in 24h (strong downtrend).
+Avoid tokens with price change over 300% in 24h (pump and dump).
+Good signs: stable or rising price, healthy liquidity above $50k, volume growing.
+IMPORTANT: $1M+ liquidity is EXCELLENT not low. 4%+ Vol/MCap is GOOD not bad;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
