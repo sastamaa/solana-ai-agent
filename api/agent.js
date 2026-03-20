@@ -28,7 +28,7 @@ const t = {
 };
 
 const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC"];
-const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM"];
+const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE"];
 const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
 
 export default async function handler(req, res) {
@@ -109,7 +109,7 @@ export default async function handler(req, res) {
                                     );
                                     const quoteData = await quoteRes.json();
                                     
-                                    if (!quoteData.error) {
+                                    if (!quoteData.error && quoteData.outAmount) {
                                         const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
                                             method: "POST", headers: jupHeaders, 
                                             body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
@@ -127,6 +127,10 @@ export default async function handler(req, res) {
                                         await redis.del(`buy_price_${mintAddress}_${chatId}`);
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
+                                        await redis.set(`last_scan_${chatId}`, 
+                                            `✅ <b>Продано: ${symbol}</b>\nПричина: ${reason}`, 
+                                            { ex: 3600 }
+                                        );
                                         userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--;
@@ -156,7 +160,7 @@ export default async function handler(req, res) {
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=pepe&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=trump&rankBy=trendingScoreH6&order=desc")
                             ]);
@@ -175,7 +179,8 @@ export default async function handler(req, res) {
                             });
 
                             let skippedChain = 0, skippedSymbol = 0, skippedLiq = 0;
-                            let skippedPump = 0, skippedIgnored = 0, foundCandidate = false;
+                            let skippedPump = 0, skippedIgnored = 0, skippedAge = 0;
+                            let skippedNoRoute = 0, foundCandidate = false;
                             
                             for (const pair of pairs) {
                                 if (pair.chainId !== "solana") { skippedChain++; continue; }
@@ -192,12 +197,30 @@ export default async function handler(req, res) {
                                 const vol = pair.volume?.h24 || 0;
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
+
+                                // Фільтр віку — токен має бути старший 24 годин
+                                const pairCreatedAt = pair.pairCreatedAt || 0;
+                                const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
+                                if (ageHours < 24) { skippedAge++; continue; }
                                 
                                 if (liq < 1000 || vol < 500 || fdv < 1000) { skippedLiq++; continue; }
                                 if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
+
+                                // ✅ Перевірка маршруту продажу через Jupiter
+                                try {
+                                    const testQuote = await fetch(
+                                        `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
+                                        { headers: jupHeaders }
+                                    );
+                                    const testData = await testQuote.json();
+                                    if (testData.error || !testData.outAmount) { 
+                                        skippedNoRoute++; 
+                                        continue;
+                                    }
+                                } catch(e) { skippedNoRoute++; continue; }
 
                                 foundCandidate = true;
                                 await redis.set(`last_scan_${chatId}`, 
@@ -298,7 +321,7 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     break;
                                     
                                 } else {
-await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 1800 });
+                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 1800 });
                                     const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
                                         `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
                                         (analysis ? `${analysis}\n` : "") +
@@ -310,7 +333,7 @@ await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 1800 });
 
                             if (!foundCandidate) {
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | В чорному списку: ${skippedIgnored}`, 
+                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | В чорному списку: ${skippedIgnored}`, 
                                     { ex: 3600 }
                                 );
                             }
