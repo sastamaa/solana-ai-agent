@@ -313,10 +313,9 @@ await redis.set(`last_scan_${chatId}`,
 userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${scoreB}/10\n🧠 <i>${reasonB}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
-                               } else {
+                              } else {
     await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
     
-    // Парсимо структурований аналіз
     const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
     const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
     const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
@@ -331,7 +330,8 @@ userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${scoreB}/10\n🧠 <i>
         `🧠 <i>${reason}</i>`;
     
     await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
-    break;
+    // НЕ break — продовжуємо шукати наступну монету!
+    continue;
 }
                             }
 
