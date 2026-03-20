@@ -235,8 +235,8 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     method: "POST",
                                     headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
                                     body: JSON.stringify({ 
-                                        model: "llama-3.1-8b-instant",
-                                        messages: [{ role: "user", content: prompt }], 
+model: "llama-3.3-70b-versatile",
+                                      messages: [{ role: "user", content: prompt }], 
                                         temperature: 0.1 
                                     })
                                 });
