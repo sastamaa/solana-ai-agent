@@ -27,9 +27,14 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
+// Блокуємо тільки ТОЧНІ співпадіння імен великих монет (не підрядки)
 const BANNED_SYMBOLS = [
-    "SOL","WSOL","USDC","USDT","SOLANA","WRAPPED","BITCOIN","BTC",
-    "ETH","ETHEREUM","BNB","WBTC","XRP","ADA","DOGE","SHIB","PEPE"
+    "SOL","WSOL","USDC","USDT","WBTC"
+];
+
+// Окремо блокуємо підрядки щоб не купити підробки під великі монети
+const BANNED_SUBSTRINGS = [
+    "SOLANA","WRAPPED","BITCOIN","ETHEREUM"
 ];
 
 const BANNED_ADDRESSES = [
@@ -162,9 +167,9 @@ export default async function handler(req, res) {
                             // ДІАГНОСТИКА: отримуємо пари
 // Отримуємо пари з 3 різних джерел і об'єднуємо
 const [res1, res2, res3] = await Promise.all([
-    fetch("https://api.dexscreener.com/latest/dex/search?q=pump&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=meme&rankBy=trendingScoreH6&order=desc"),
-    fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc")
+    fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=pepe&rankBy=trendingScoreH6&order=desc")
 ]);
 const [d1, d2, d3] = await Promise.all([res1.json(), res2.json(), res3.json()]);
 
@@ -188,7 +193,8 @@ await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар
                                 const sym = pair.baseToken.symbol.toUpperCase();
                                 const tokenAddress = pair.baseToken.address;
                                 
-                                if (BANNED_SYMBOLS.some(banned => sym.includes(banned))) { skippedSymbol++; continue; }
+if (BANNED_SYMBOLS.includes(sym)) { skippedSymbol++; continue; }
+if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continue; }
                                 if (BANNED_ADDRESSES.includes(tokenAddress)) { skippedAddress++; continue; }
                                 if (tokenAddress === solMint) continue;
                                 
@@ -197,8 +203,8 @@ await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
                                 
-                                if (liq < 10000 || vol < 20000 || fdv < 50000) { skippedLiq++; continue; }
-                                if (priceChange24h > 150) { skippedPump++; continue; }
+                             if (liq < 5000 || vol < 5000 || fdv < 10000) { skippedLiq++; continue; }
+if (priceChange24h > 300) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) continue;
