@@ -208,42 +208,45 @@ model: "llama-3.3-70b-versatile",
                         
                         const aiDecision = groqData.choices[0].message.content.trim();
 
-                        if (aiDecision.includes("BUY")) {
+                         if (aiDecision.includes("BUY")) {
                             const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=150`, { headers: jupHeaders });
                             const quoteData = await quoteRes.json();
 
-                            if (!quoteData.error) {
-                                const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', { method: 'POST', headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
-                                const swapData = await swapRes.json();
-                                
-                                const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
-                                const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-                                transaction.sign([wallet]);
-                                const txid = await connection.sendRawTransaction(transaction.serialize());
-                                
-                                await redis.set(`buy_price_${tokenAddress}_${chatId}`, pair.priceUsd);
-                                await redis.set(`last_scan_${chatId}`, `✅ <b>Куплено:</b> ${symbol}!\nШІ очікує прибутку.`, { ex: 3600 });
-                                
-                                userLogs.push(`${langDict.buy} ${symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
-                                break; // Купили 1 монету - завершуємо роботу
-                            } else {
-                                await redis.set(`last_scan_${chatId}`, `❌ <b>Помилка Jupiter:</b>\nНе зміг купити ${symbol} через проковзування.`, { ex: 3600 });
+                            if (quoteData.error) {
+                                await redis.set(`last_scan_${chatId}`, `❌ <b>Jupiter помилка:</b> не зміг купити ${symbol}`, { ex: 3600 });
                                 break;
                             }
+
+                            const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', { method: 'POST', headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
+                            const swapData = await swapRes.json();
+                            
+                            if (!swapData.swapTransaction) {
+                                await redis.set(`last_scan_${chatId}`, `❌ <b>Swap помилка:</b> транзакція не створена`, { ex: 3600 });
+                                break;
+                            }
+
+                            const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
+                            const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                            transaction.sign([wallet]);
+                            const txid = await connection.sendRawTransaction(transaction.serialize());
+                            
+                            // Зберігаємо ціну покупки
+                            const priceToSave = (pair.priceUsd || pair.priceNative || "0.000001").toString();
+                            await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
+                            
+                            // ВАЖЛИВО: зберігаємо флаг "вже куплено" щоб не купити знову
+                            await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 }); // на 5 хвилин
+                            
+                            await redis.set(`last_scan_${chatId}`, `✅ <b>Куплено:</b> ${symbol}!\nШІ очікує прибутку.`, { ex: 3600 });
+                            userLogs.push(`${langDict.buy} ${symbol}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                            break;
+                            
                         } else {
-                            // Відхилили - забуваємо про неї на 2 години
                             await redis.set(`ignored_token_${tokenAddress}`, 'true', { ex: 7200 });
                             let shortThought = aiDecision.replace('WAIT', '').trim();
                             await redis.set(`last_scan_${chatId}`, `🔎 Відхилено: <b>${symbol}</b>\n🧠 <b>Причина:</b> <i>${shortThought}</i>`, { ex: 3600 });
-                            break; // Завершуємо роботу до наступних 5 хвилин
+                            break;
                         }
-                    }
-                } catch (apiError) {
-                    await redis.set(`last_scan_${chatId}`, `⚠️ <b>Помилка мережі:</b>\n${apiError.message}`, { ex: 3600 });
-                }
-            } else if (balance < tradeLamports + 5000000 && activeTokensCount === 0) {
-                 await redis.set(`last_scan_${chatId}`, `⚠️ <b>Недостатньо SOL</b>\nБаланс менший за суму покупки + комісію. Поповніть гаманець.`, { ex: 3600 });
-            }
         }
 
         // Відправляємо звіт в Telegram, якщо були дії (покупка/продаж)
