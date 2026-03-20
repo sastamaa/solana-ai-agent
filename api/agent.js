@@ -210,13 +210,26 @@ await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар
                                     { ex: 3600 }
                                 );
 
-                                const prompt = `You are a conservative crypto trader. Answer exactly with BUY or WAIT, then new line, 1-2 sentence explanation in Ukrainian.
-Token: ${sym}
-Liquidity: $${Math.round(liq)}
-Volume 24h: $${Math.round(vol)}
-Market Cap: $${Math.round(fdv)}
-Change 24h: ${priceChange24h}%
-Prefer stable tokens. Avoid pump and dumps. Avoid tokens with names similar to major coins.`;
+                                const prompt = `You are a professional crypto analyst. Analyze this Solana token and respond ONLY in this exact format:
+
+DECISION: BUY or WAIT
+SCORE: X/10
+ANALYSIS:
+• Liquidity: [assessment]
+• Volume/MCap ratio: [calculate vol/fdv ratio and assess]
+• Price momentum: [assessment]
+• Risk level: [Low/Medium/High]
+REASON: [1 sentence in Ukrainian explaining the decision]
+
+Token data:
+- Symbol: ${sym}
+- Liquidity: $${Math.round(liq)}
+- Volume 24h: $${Math.round(vol)}
+- Market Cap: $${Math.round(fdv)}
+- Vol/MCap ratio: ${(vol/fdv*100).toFixed(1)}%
+- Price change 24h: ${priceChange24h}%
+
+Rules: BUY only if score >= 7, liquidity > $15k, vol/mcap > 5%, no extreme pumps.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
@@ -282,12 +295,26 @@ model: "llama-3.1-8b-instant",
                                     userLogs.push(`${langDict.buy} ${sym}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
-                                } else {
-                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
-                                    const shortThought = aiDecision.replace(/^WAIT/i, "").trim();
-                                    await redis.set(`last_scan_${chatId}`, `🔎 Відхилено: <b>${sym}</b>\n🧠 <i>${shortThought}</i>`, { ex: 3600 });
-                                    break;
-                                }
+                               } else {
+    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
+    
+    // Парсимо структурований аналіз
+    const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
+    const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
+    const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
+    
+    const score = scoreMatch ? scoreMatch[1] : "?";
+    const reason = reasonMatch ? reasonMatch[1].trim() : aiDecision;
+    const analysis = analysisMatch ? analysisMatch[1].trim() : "";
+    
+    const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
+        `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
+        (analysis ? `${analysis}\n` : "") +
+        `🧠 <i>${reason}</i>`;
+    
+    await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
+    break;
+}
                             }
 
                             // Якщо жодного кандидата не знайдено
