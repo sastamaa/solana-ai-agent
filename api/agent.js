@@ -153,20 +153,21 @@ export default async function handler(req, res) {
                     } else {
                         try {
                             // Отримуємо пари з 4 джерел — ширше покриття ринку
-                            const [res1, res2, res3, res4] = await Promise.all([
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc")
-                            ]);
-                            const [d1, d2, d3, d4] = await Promise.all([
-                                res1.json(), res2.json(), res3.json(), res4.json()
-                            ]);
-
-                            const allPairs = [
-                                ...(d1.pairs||[]), ...(d2.pairs||[]),
-                                ...(d3.pairs||[]), ...(d4.pairs||[])
-                            ];
+                            const [res1, res2, res3, res4, res5, res6] = await Promise.all([
+    fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=trump&rankBy=trendingScoreH6&order=desc")
+]);
+const [d1, d2, d3, d4, d5, d6] = await Promise.all([
+    res1.json(), res2.json(), res3.json(), res4.json(), res5.json(), res6.json()
+]);
+const allPairs = [
+    ...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[]),
+    ...(d4.pairs||[]), ...(d5.pairs||[]), ...(d6.pairs||[])
+];
                             const seen = new Set();
                             const pairs = allPairs.filter(p => {
                                 if (!p.pairAddress || seen.has(p.pairAddress)) return false;
@@ -194,7 +195,7 @@ export default async function handler(req, res) {
                                 const priceChange24h = pair.priceChange?.h24 || 0;
                                 
                                 // Розширені фільтри
-                                if (liq < 3000 || vol < 3000 || fdv < 5000) { skippedLiq++; continue; }
+if (liq < 1000 || vol < 500 || fdv < 1000) { skippedLiq++; continue; }
                                 if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
