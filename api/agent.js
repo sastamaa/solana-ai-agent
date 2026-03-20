@@ -241,7 +241,7 @@ Volume/MCap minimum: 2% (higher is better).
 Avoid tokens with price change below -20% in 24h (strong downtrend).
 Avoid tokens with price change over 300% in 24h (pump and dump).
 Good signs: stable or rising price, healthy liquidity above $50k, volume growing.
-IMPORTANT: $1M+ liquidity is EXCELLENT not low. 4%+ Vol/MCap is GOOD not bad;
+IMPORTANT: $1M+ liquidity is EXCELLENT not low. 4%+ Vol/MCap is GOOD not bad.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
