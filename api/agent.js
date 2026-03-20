@@ -160,11 +160,24 @@ export default async function handler(req, res) {
                     } else {
                         try {
                             // ДІАГНОСТИКА: отримуємо пари
-const trendRes = await fetch("https://api.dexscreener.com/latest/dex/search?q=SOL&rankBy=trendingScoreH6&order=desc");
-const trendData = await trendRes.json();
-const pairs = trendData.pairs || [];
+// Отримуємо пари з 3 різних джерел і об'єднуємо
+const [res1, res2, res3] = await Promise.all([
+    fetch("https://api.dexscreener.com/latest/dex/search?q=pump&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=meme&rankBy=trendingScoreH6&order=desc"),
+    fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc")
+]);
+const [d1, d2, d3] = await Promise.all([res1.json(), res2.json(), res3.json()]);
 
-                            await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар. Фільтруємо...`, { ex: 3600 });
+// Об'єднуємо і прибираємо дублікати за адресою
+const allPairs = [...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[])];
+const seen = new Set();
+const pairs = allPairs.filter(p => {
+    if (seen.has(p.pairAddress)) return false;
+    seen.add(p.pairAddress);
+    return true;
+});
+
+await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар з 3 джерел. Фільтруємо...`, { ex: 3600 });
 
                             let skippedChain = 0, skippedSymbol = 0, skippedAddress = 0;
                             let skippedLiq = 0, skippedPump = 0, foundCandidate = false;
