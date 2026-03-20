@@ -27,15 +27,13 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
-// Заблоковані символи (назви що схожі на великі монети)
 const BANNED_SYMBOLS = [
     "SOL","WSOL","USDC","USDT","SOLANA","WRAPPED","BITCOIN","BTC",
     "ETH","ETHEREUM","BNB","WBTC","XRP","ADA","DOGE","SHIB","PEPE"
 ];
 
-// Заблоковані адреси конкретних токенів (шахрайські або небажані)
 const BANNED_ADDRESSES = [
-    "De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump", // Pygmy Hippo (SOLANA fake)
+    "De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump",
 ];
 
 export default async function handler(req, res) {
@@ -87,9 +85,7 @@ export default async function handler(req, res) {
             );
             const balance = await connection.getBalance(wallet.publicKey);
             
-            // ============================================
-            // ЕТАП 1: ПЕРЕВІРКА КУПЛЕНИХ ТОКЕНІВ І ПРОДАЖ
-            // ============================================
+            // ЕТАП 1: ПРОДАЖ
             for (const acc of accounts.value) {
                 const tokenAmountInfo = acc.account.data.parsed.info.tokenAmount;
                 const mintAddress = acc.account.data.parsed.info.mint;
@@ -126,14 +122,13 @@ export default async function handler(req, res) {
                                         const swapData = await swapRes.json();
                                         const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-                                        
-                                        // Свіжий blockhash перед підписом
-                                        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+                                        const { blockhash } = await connection.getLatestBlockhash("finalized");
                                         transaction.message.recentBlockhash = blockhash;
                                         transaction.sign([wallet]);
-                                        
-                                        const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false, maxRetries: 3 });
-                                        await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, "confirmed");
+                                        const txid = await connection.sendRawTransaction(transaction.serialize(), { 
+                                            skipPreflight: true, maxRetries: 5 
+                                        });
+                                        await new Promise(resolve => setTimeout(resolve, 2000));
                                         
                                         await redis.del(`buy_price_${mintAddress}_${chatId}`);
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
@@ -150,41 +145,38 @@ export default async function handler(req, res) {
                 }
             }
 
-            // ============================================
-            // ЕТАП 2: ПОШУК І ПОКУПКА НОВОЇ МОНЕТИ
-            // ============================================
+            // ЕТАП 2: ПОКУПКА
             if (!soldSomething && activeTokensCount < 3) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
                 if (balance < tradeLamports + 5000000) {
                     await redis.set(`last_scan_${chatId}`, "⚠️ Недостатньо SOL. Поповніть гаманець.", { ex: 3600 });
                 } else {
-                    // Захист від подвійної покупки
-                   const recentBuy = await redis.get(`active_buy_${chatId}`);
-if (recentBuy && activeTokensCount === 0) {
-    // Токена немає в гаманці — флаг застряг, очищаємо автоматично
-    await redis.del(`active_buy_${chatId}`);
-} else if (recentBuy) {
-    await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження блокчейну...", { ex: 300 });
+                    const recentBuy = await redis.get(`active_buy_${chatId}`);
+                    if (recentBuy && activeTokensCount === 0) {
+                        await redis.del(`active_buy_${chatId}`);
+                    } else if (recentBuy) {
+                        await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
                     } else {
                         try {
+                            // ДІАГНОСТИКА: отримуємо пари
                             const trendRes = await fetch("https://api.dexscreener.com/latest/dex/search?q=solana");
                             const trendData = await trendRes.json();
                             const pairs = trendData.pairs || [];
+
+                            await redis.set(`last_scan_${chatId}`, `🔧 DexScreener: ${pairs.length} пар. Фільтруємо...`, { ex: 3600 });
+
+                            let skippedChain = 0, skippedSymbol = 0, skippedAddress = 0;
+                            let skippedLiq = 0, skippedPump = 0, foundCandidate = false;
                             
                             for (const pair of pairs) {
-                                if (pair.chainId !== "solana") continue;
+                                if (pair.chainId !== "solana") { skippedChain++; continue; }
                                 
                                 const sym = pair.baseToken.symbol.toUpperCase();
                                 const tokenAddress = pair.baseToken.address;
                                 
-                                // Фільтр 1: Заблоковані символи
-                                if (BANNED_SYMBOLS.some(banned => sym.includes(banned))) continue;
-                                
-                                // Фільтр 2: Заблоковані адреси
-                                if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
-                                
-                                // Фільтр 3: Системна адреса SOL
+                                if (BANNED_SYMBOLS.some(banned => sym.includes(banned))) { skippedSymbol++; continue; }
+                                if (BANNED_ADDRESSES.includes(tokenAddress)) { skippedAddress++; continue; }
                                 if (tokenAddress === solMint) continue;
                                 
                                 const liq = pair.liquidity?.usd || 0;
@@ -192,18 +184,16 @@ if (recentBuy && activeTokensCount === 0) {
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
                                 
-                                // Фільтр 4: Мінімальні показники
-                                if (liq < 10000 || vol < 20000 || fdv < 50000) continue; 
-                                // Фільтр 5: Не беремо токени що вже злетіли на 150%+
-                                if (priceChange24h > 150) continue; 
+                                if (liq < 10000 || vol < 20000 || fdv < 50000) { skippedLiq++; continue; }
+                                if (priceChange24h > 150) { skippedPump++; continue; }
                                 
-                                // Фільтр 6: Чорний список (вже відхилені ШІ)
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) continue;
 
-                                await redis.set(
-                                    `last_scan_${chatId}`, 
-                                    `🔎 Аналізую: <b>${sym}</b>\nЛіквідність: $${Math.round(liq)} | Об'єм: $${Math.round(vol)}`, 
+                                // Знайшли кандидата — йдемо до Groq
+                                foundCandidate = true;
+                                await redis.set(`last_scan_${chatId}`, 
+                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq)} | Об'єм: $${Math.round(vol)}\n📊 Відфільтровано: інші мережі=${skippedChain}, символи=${skippedSymbol}, ліквідність=${skippedLiq}, памп=${skippedPump}`, 
                                     { ex: 3600 }
                                 );
 
@@ -260,43 +250,41 @@ Prefer stable tokens. Avoid pump and dumps. Avoid tokens with names similar to m
                                     
                                     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-                                    
-                                    // Свіжий blockhash перед підписом
-                                    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+                                    const { blockhash } = await connection.getLatestBlockhash("finalized");
                                     transaction.message.recentBlockhash = blockhash;
                                     transaction.sign([wallet]);
                                     
-                                    const txid = await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: false, maxRetries: 3 });
-                                    await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, "confirmed");
+                                    const txid = await connection.sendRawTransaction(transaction.serialize(), { 
+                                        skipPreflight: true, maxRetries: 5 
+                                    });
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
                                     
                                     const priceToSave = (pair.priceUsd || "0.000001").toString();
-                                    
-                                    // Зберігаємо ціну покупки
                                     await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
-                                    
-                                    // Зберігаємо інфо про токен для відображення в портфелі
                                     await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
-                                        symbol: sym,
-                                        buyPrice: priceToSave,
-                                        buyTime: Date.now(),
-                                        txid: txid
+                                        symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid: txid
                                     }), { ex: 86400 });
-                                    
-                                    // Захист від повторної покупки на 5 хвилин
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
-                                    
                                     await redis.set(`last_scan_${chatId}`, `✅ Куплено: <b>${sym}</b>! ШІ очікує прибутку.`, { ex: 3600 });
                                     userLogs.push(`${langDict.buy} ${sym}\n🎯 <b>ШІ:</b> ${aiDecision}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
                                 } else {
-                                    // Відхилено — додаємо в чорний список на 2 години
                                     await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 7200 });
                                     const shortThought = aiDecision.replace(/^WAIT/i, "").trim();
                                     await redis.set(`last_scan_${chatId}`, `🔎 Відхилено: <b>${sym}</b>\n🧠 <i>${shortThought}</i>`, { ex: 3600 });
                                     break;
                                 }
                             }
+
+                            // Якщо жодного кандидата не знайдено
+                            if (!foundCandidate) {
+                                await redis.set(`last_scan_${chatId}`, 
+                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Ліквідність: ${skippedLiq} | Памп: ${skippedPump}`, 
+                                    { ex: 3600 }
+                                );
+                            }
+
                         } catch (apiError) {
                             await redis.set(`last_scan_${chatId}`, `⚠️ Помилка мережі: ${apiError.message}`, { ex: 3600 });
                         }
