@@ -12,10 +12,23 @@ const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet
 
 async function getSolPrice() {
     try {
-        const res = await fetch('https://api.jup.ag/price/v2?ids=SOL', { signal: AbortSignal.timeout(1500) });
+        const res = await fetch(
+            'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+            { signal: AbortSignal.timeout(3000) }
+        );
         const data = await res.json();
-        return parseFloat(data.data.SOL.price);
-    } catch(e) { return 180; } 
+        if (data?.solana?.usd) return parseFloat(data.solana.usd);
+    } catch(e) {}
+    try {
+        const res = await fetch(
+            'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
+            { signal: AbortSignal.timeout(3000) }
+        );
+        const data = await res.json();
+        const price = data?.data?.['So11111111111111111111111111111111111111112']?.price;
+        if (price) return parseFloat(price);
+    } catch(e) {}
+    return 88; // актуальний fallback
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
