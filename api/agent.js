@@ -31,6 +31,13 @@ const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC"];
 const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE"];
 const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
 
+// ⚡ АГРЕСИВНІ НАЛАШТУВАННЯ
+const TAKE_PROFIT = 15;      // Продаємо при +15%
+const STOP_LOSS = 10;        // Продаємо при -10%
+const TRAILING_DROP = 8;     // Трейлінг: впало 8% від піку
+const TRAILING_MIN = 8;      // Трейлінг активується після +8% росту
+const MAX_HOLD_HOURS = 4;    // Примусовий продаж через 4 години
+
 export default async function handler(req, res) {
   try {
     const groqKey = process.env.GROQ_API_KEY; 
@@ -69,7 +76,11 @@ export default async function handler(req, res) {
         try { wallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey)); } 
         catch (e) { continue; }
         
-        const settings = userData.settings || { tradeAmount: 0.01, takeProfit: 30, stopLoss: 30 };
+        const settings = userData.settings || { 
+            tradeAmount: 0.005, 
+            takeProfit: TAKE_PROFIT, 
+            stopLoss: STOP_LOSS 
+        };
         let soldSomething = false; 
         let activeTokensCount = 0; 
 
@@ -97,12 +108,45 @@ export default async function handler(req, res) {
                                 const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
                                 const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                 const symbol = dexData.pairs[0].baseToken.symbol;
+
+                                // Трейлінг-стоп: оновлюємо максимум
+                                const maxPriceStr = await redis.get(`max_price_${mintAddress}_${chatId}`);
+                                let maxPrice = maxPriceStr ? parseFloat(maxPriceStr) : buyPrice;
+                                if (currentPrice > maxPrice) {
+                                    maxPrice = currentPrice;
+                                    await redis.set(`max_price_${mintAddress}_${chatId}`, maxPrice.toString(), { ex: 86400 });
+                                }
+                                const percentFromMax = ((currentPrice - maxPrice) / maxPrice) * 100;
+                                const trailingActive = maxPrice >= buyPrice * (1 + TRAILING_MIN / 100);
+                                const trailingTriggered = trailingActive && percentFromMax <= -TRAILING_DROP;
+
+                                // Примусовий продаж через MAX_HOLD_HOURS
+                                const tokenInfoStr = await redis.get(`token_info_${mintAddress}_${chatId}`);
+                                const tokenInfo = tokenInfoStr ? JSON.parse(tokenInfoStr) : null;
+                                const buyTime = tokenInfo?.buyTime || Date.now();
+                                const heldHours = (Date.now() - buyTime) / (1000 * 60 * 60);
+                                const forceSell = heldHours >= MAX_HOLD_HOURS;
+
+                                let reason = null;
+                                if (percentChange >= settings.takeProfit) {
+                                    reason = `🎯 Take-Profit (+${percentChange.toFixed(2)}%)`;
+                                } else if (percentChange <= -settings.stopLoss) {
+                                    reason = `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
+                                } else if (trailingTriggered) {
+                                    reason = `📉 Trailing Stop (пік: +${((maxPrice-buyPrice)/buyPrice*100).toFixed(1)}%, впало: ${percentFromMax.toFixed(1)}%)`;
+                               } else if (forceSell && percentChange >= 0) {
+    reason = `⏰ Час вийшов +${percentChange.toFixed(2)}% — фіксуємо прибуток`;
+} else if (forceSell && percentChange < 0) {
+    // В мінусі — чекаємо відновлення ще 2 години
+    const tokenInfoStr2 = await redis.get(`token_info_${mintAddress}_${chatId}`);
+    const ti = tokenInfoStr2 ? JSON.parse(tokenInfoStr2) : null;
+    const extendedHours = (Date.now() - (ti?.buyTime || Date.now())) / (1000 * 60 * 60);
+    if (extendedHours >= MAX_HOLD_HOURS + 2) {
+        reason = `⏰ Час вийшов (${extendedHours.toFixed(1)}г) — мінімізуємо збиток ${percentChange.toFixed(2)}%`;
+    }
+}
                                 
-                                if (percentChange >= settings.takeProfit || percentChange <= -settings.stopLoss) {
-                                    const reason = percentChange >= settings.takeProfit 
-                                        ? `🎯 Take-Profit (+${percentChange.toFixed(2)}%)` 
-                                        : `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
-                                    
+                                if (reason) {
                                     const quoteRes = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${mintAddress}&outputMint=${solMint}&amount=${tokenAmountInfo.amount}&slippageBps=300`, 
                                         { headers: jupHeaders }
@@ -126,6 +170,7 @@ export default async function handler(req, res) {
                                         await new Promise(resolve => setTimeout(resolve, 2000));
                                         await redis.del(`buy_price_${mintAddress}_${chatId}`);
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
+                                        await redis.del(`max_price_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
                                         await redis.set(`last_scan_${chatId}`, 
                                             `✅ <b>Продано: ${symbol}</b>\nПричина: ${reason}`, 
@@ -198,7 +243,6 @@ export default async function handler(req, res) {
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
 
-                                // Фільтр віку — токен має бути старший 24 годин
                                 const pairCreatedAt = pair.pairCreatedAt || 0;
                                 const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
                                 if (ageHours < 24) { skippedAge++; continue; }
@@ -209,7 +253,6 @@ export default async function handler(req, res) {
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
 
-                                // ✅ Перевірка маршруту продажу через Jupiter
                                 try {
                                     const testQuote = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
@@ -228,13 +271,13 @@ export default async function handler(req, res) {
                                     { ex: 3600 }
                                 );
 
-                                const prompt = `You are a professional crypto analyst. Analyze this Solana token and respond ONLY in this exact format:
+                                const prompt = `You are an aggressive crypto scalper. Analyze this Solana token for a SHORT-TERM trade (1-4 hours) and respond ONLY in this exact format:
 
 DECISION: BUY or WAIT
 SCORE: X/10
 ANALYSIS:
 • Liquidity: [assessment]
-• Volume/MCap ratio: [calculate vol/fdv ratio and assess]
+• Volume/MCap ratio: [assess]
 • Price momentum: [assessment]
 • Risk level: [Low/Medium/High]
 REASON: [1 sentence in Ukrainian explaining the decision]
@@ -247,11 +290,11 @@ Token data:
 - Vol/MCap ratio: ${(vol/fdv*100).toFixed(1)}%
 - Price change 24h: ${priceChange24h}%
 
-Rules: BUY only if score >= 6.
-Liquidity minimum: $3,000 (higher is better, $50k+ is excellent).
-Volume/MCap minimum: 2% (higher is better, 10%+ is excellent).
-Avoid tokens with price change below -50% or above +300% in 24h.
-IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol/MCap is GOOD. 10%+ Vol/MCap is EXCELLENT.`;
+Strategy: SHORT-TERM scalping. BUY if score >= 6.
+Prefer tokens with: positive momentum, high volume, liquidity $10k+.
+Vol/MCap 5%+ is GREAT. 10%+ is EXCELLENT.
+$50k+ liquidity is GOOD. $500k+ is EXCELLENT.
+Avoid: price change below -30% or above +200% in 24h.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
@@ -259,7 +302,7 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     body: JSON.stringify({ 
                                         model: "llama-3.3-70b-versatile",
                                         messages: [{ role: "user", content: prompt }], 
-                                        temperature: 0.1 
+                                        temperature: 0.2
                                     })
                                 });
                                 const groqData = await groqRes.json();
@@ -281,7 +324,7 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
 
                                 if (aiDecision.toUpperCase().includes("DECISION: BUY")) {
                                     const quoteRes = await fetch(
-                                        `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=150`, 
+                                        `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=200`, 
                                         { headers: jupHeaders }
                                     );
                                     const quoteData = await quoteRes.json();
@@ -309,12 +352,13 @@ IMPORTANT: $100k+ liquidity is EXCELLENT. $1M+ liquidity is OUTSTANDING. 4%+ Vol
                                     await new Promise(resolve => setTimeout(resolve, 2000));
                                     const priceToSave = (pair.priceUsd || "0.000001").toString();
                                     await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
+                                    await redis.set(`max_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 86400 });
                                     await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
                                         symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid
                                     }), { ex: 86400 });
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
                                     await redis.set(`last_scan_${chatId}`, 
-                                        `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>`, 
+                                        `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
                                         { ex: 3600 }
                                     );
                                     userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
