@@ -27,7 +27,6 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
-// ✅ Розширений список заборонених символів + PEPE
 const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC","PEPE","SHIB","FLOKI","DOGE"];
 const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE","ELON","TRUMP"];
 const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
@@ -37,6 +36,29 @@ const STOP_LOSS = 10;
 const TRAILING_DROP = 8;
 const TRAILING_MIN = 8;
 const MAX_HOLD_HOURS = 4;
+
+// ✅ Актуальний курс SOL з кількох джерел
+async function getSolPrice() {
+    try {
+        const res = await fetch(
+            'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+            { signal: AbortSignal.timeout(3000) }
+        );
+        const data = await res.json();
+        if (data?.solana?.usd) return parseFloat(data.solana.usd);
+    } catch(e) {}
+    // Запасне джерело — Jupiter
+    try {
+        const res = await fetch(
+            'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
+            { signal: AbortSignal.timeout(3000) }
+        );
+        const data = await res.json();
+        const price = data?.data?.['So11111111111111111111111111111111111111112']?.price;
+        if (price) return parseFloat(price);
+    } catch(e) {}
+    return 130; // Fallback
+}
 
 // ✅ Honeypot перевірка через RugCheck
 async function checkHoneypot(tokenAddress) {
@@ -56,7 +78,6 @@ async function checkHoneypot(tokenAddress) {
             r.name?.toLowerCase().includes('copycat') ||
             r.level === 'danger'
         );
-        // score > 500 = небезпечний на RugCheck
         return dangerous || score > 500;
     } catch(e) { return false; }
 }
@@ -78,6 +99,9 @@ export default async function handler(req, res) {
     );
     const solMint = "So11111111111111111111111111111111111111112"; 
     const jupHeaders = { "Content-Type": "application/json", "x-api-key": jupiterKey };
+
+    // ✅ Отримуємо актуальний курс SOL один раз для всіх користувачів
+    const solPriceUsd = await getSolPrice();
 
     const userKeys = await redis.keys("user_*");
     if (userKeys.length === 0) return res.status(200).send("Немає користувачів");
@@ -104,7 +128,6 @@ export default async function handler(req, res) {
             takeProfit: TAKE_PROFIT, 
             stopLoss: STOP_LOSS 
         };
-        // ✅ Примусово застосовуємо агресивні налаштування
         settings.takeProfit = settings.takeProfit || TAKE_PROFIT;
         settings.stopLoss = settings.stopLoss || STOP_LOSS;
 
@@ -147,7 +170,7 @@ export default async function handler(req, res) {
                                 const trailingActive = maxPrice >= buyPrice * (1 + TRAILING_MIN / 100);
                                 const trailingTriggered = trailingActive && percentFromMax <= -TRAILING_DROP;
 
-                                // Примусовий продаж
+                                // Час утримання
                                 const tokenInfoStr = await redis.get(`token_info_${mintAddress}_${chatId}`);
                                 const tokenInfo = tokenInfoStr ? JSON.parse(tokenInfoStr) : null;
                                 const buyTime = tokenInfo?.buyTime || Date.now();
@@ -193,17 +216,19 @@ export default async function handler(req, res) {
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`max_price_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
+                                        // ✅ SOL отримано з актуальним курсом
+                                        const solReceived = (parseInt(quoteData.outAmount) / 1e9).toFixed(4);
+                                        const usdReceived = (parseFloat(solReceived) * solPriceUsd).toFixed(2);
                                         await redis.set(`last_scan_${chatId}`, 
-                                            `✅ <b>Продано: ${symbol}</b>\nПричина: ${reason}`, 
+                                            `✅ <b>Продано: ${symbol}</b>\nПричина: ${reason}\n💰 Отримано: ${solReceived} SOL (~$${usdReceived})`, 
                                             { ex: 3600 }
                                         );
-                                        userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                                        userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n💰 Отримано: ${solReceived} SOL (~$${usdReceived})\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--;
                                     } else {
-                                        // ✅ Якщо Jupiter не може продати — позначаємо як honeypot
                                         await redis.set(`last_scan_${chatId}`, 
-                                            `⚠️ <b>${symbol}</b> не можна продати (honeypot). Пропускаємо.`, 
+                                            `⚠️ <b>${symbol}</b> не можна продати (honeypot/no liquidity).`, 
                                             { ex: 3600 }
                                         );
                                     }
@@ -219,7 +244,9 @@ export default async function handler(req, res) {
                 const tradeLamports = Math.floor(settings.tradeAmount * 1e9);
 
                 if (balance < tradeLamports + 5000000) {
-                    await redis.set(`last_scan_${chatId}`, "⚠️ Недостатньо SOL. Поповніть гаманець.", { ex: 3600 });
+                    const balSol = (balance / 1e9).toFixed(4);
+                    const balUsd = (parseFloat(balSol) * solPriceUsd).toFixed(2);
+                    await redis.set(`last_scan_${chatId}`, `⚠️ Недостатньо SOL. Баланс: ${balSol} SOL (~$${balUsd}). Поповніть гаманець.`, { ex: 3600 });
                 } else {
                     const recentBuy = await redis.get(`active_buy_${chatId}`);
                     if (recentBuy && activeTokensCount === 0) {
@@ -270,18 +297,18 @@ export default async function handler(req, res) {
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
 
+                                // ✅ Вік знижено до 6 годин
                                 const pairCreatedAt = pair.pairCreatedAt || 0;
                                 const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
-                                if (ageHours < 24) { skippedAge++; continue; }
+                                if (ageHours < 6) { skippedAge++; continue; }
                                 
-                                // ✅ Підвищені вимоги до ліквідності
                                 if (liq < 5000 || vol < 1000 || fdv < 5000) { skippedLiq++; continue; }
                                 if (priceChange24h > 200 || priceChange24h < -30) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
 
-                                // ✅ Перевірка маршруту Jupiter
+                                // Jupiter перевірка маршруту
                                 try {
                                     const testQuote = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
@@ -294,7 +321,7 @@ export default async function handler(req, res) {
                                     }
                                 } catch(e) { skippedNoRoute++; continue; }
 
-                                // ✅ Honeypot перевірка через RugCheck
+                                // Honeypot перевірка
                                 const isHoneypot = await checkHoneypot(tokenAddress);
                                 if (isHoneypot) {
                                     skippedHoneypot++;
@@ -303,8 +330,10 @@ export default async function handler(req, res) {
                                 }
 
                                 foundCandidate = true;
+                                // ✅ Показуємо актуальний курс SOL в повідомленні
+                                const tradeUsd = (settings.tradeAmount * solPriceUsd).toFixed(2);
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${(vol/fdv*100).toFixed(1)}% | Зміна: ${priceChange24h}%`, 
+                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${(vol/fdv*100).toFixed(1)}% | Зміна: ${priceChange24h}%\n💰 SOL: $${solPriceUsd.toFixed(2)}`, 
                                     { ex: 3600 }
                                 );
 
@@ -395,10 +424,10 @@ Avoid: price change below -30% or above +200% in 24h.`;
                                     }), { ex: 86400 });
                                     await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
                                     await redis.set(`last_scan_${chatId}`, 
-                                        `✅ <b>Куплено: ${sym}</b>\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
+                                        `✅ <b>Куплено: ${sym}</b>\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
                                         { ex: 3600 }
                                     );
-                                    userLogs.push(`${langDict.buy} ${sym}\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                                    userLogs.push(`${langDict.buy} ${sym}\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                     break;
                                     
                                 } else {
@@ -414,7 +443,7 @@ Avoid: price change below -30% or above +200% in 24h.`;
 
                             if (!foundCandidate) {
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | Honeypot: ${skippedHoneypot} | В ЧС: ${skippedIgnored}`, 
+                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | Honeypot: ${skippedHoneypot} | В ЧС: ${skippedIgnored}\n💰 Курс SOL: $${solPriceUsd.toFixed(2)}`, 
                                     { ex: 3600 }
                                 );
                             }
