@@ -27,16 +27,39 @@ const t = {
     el: { rep: "Αναφορά AI:", buy: "✅ <b>ΑΓΟΡΑΣΤΗΚΕ:</b>", sell: "✅ <b>ΠΟΥΛΗΘΗΚΕ:</b>" }
 };
 
-const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC"];
-const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE"];
+// ✅ Розширений список заборонених символів + PEPE
+const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC","PEPE","SHIB","FLOKI","DOGE"];
+const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE","ELON","TRUMP"];
 const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
 
-// ⚡ АГРЕСИВНІ НАЛАШТУВАННЯ
-const TAKE_PROFIT = 15;      // Продаємо при +15%
-const STOP_LOSS = 10;        // Продаємо при -10%
-const TRAILING_DROP = 8;     // Трейлінг: впало 8% від піку
-const TRAILING_MIN = 8;      // Трейлінг активується після +8% росту
-const MAX_HOLD_HOURS = 4;    // Примусовий продаж через 4 години
+const TAKE_PROFIT = 15;
+const STOP_LOSS = 10;
+const TRAILING_DROP = 8;
+const TRAILING_MIN = 8;
+const MAX_HOLD_HOURS = 4;
+
+// ✅ Honeypot перевірка через RugCheck
+async function checkHoneypot(tokenAddress) {
+    try {
+        const res = await fetch(
+            `https://api.rugcheck.xyz/v1/tokens/${tokenAddress}/report/summary`,
+            { signal: AbortSignal.timeout(3000) }
+        );
+        if (!res.ok) return false;
+        const data = await res.json();
+        const risks = data?.risks || [];
+        const score = data?.score || 0;
+        const dangerous = risks.some(r =>
+            r.name?.toLowerCase().includes('honeypot') ||
+            r.name?.toLowerCase().includes('freeze') ||
+            r.name?.toLowerCase().includes('mint authority') ||
+            r.name?.toLowerCase().includes('copycat') ||
+            r.level === 'danger'
+        );
+        // score > 500 = небезпечний на RugCheck
+        return dangerous || score > 500;
+    } catch(e) { return false; }
+}
 
 export default async function handler(req, res) {
   try {
@@ -81,6 +104,10 @@ export default async function handler(req, res) {
             takeProfit: TAKE_PROFIT, 
             stopLoss: STOP_LOSS 
         };
+        // ✅ Примусово застосовуємо агресивні налаштування
+        settings.takeProfit = settings.takeProfit || TAKE_PROFIT;
+        settings.stopLoss = settings.stopLoss || STOP_LOSS;
+
         let soldSomething = false; 
         let activeTokensCount = 0; 
 
@@ -109,7 +136,7 @@ export default async function handler(req, res) {
                                 const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                 const symbol = dexData.pairs[0].baseToken.symbol;
 
-                                // Трейлінг-стоп: оновлюємо максимум
+                                // Трейлінг-стоп
                                 const maxPriceStr = await redis.get(`max_price_${mintAddress}_${chatId}`);
                                 let maxPrice = maxPriceStr ? parseFloat(maxPriceStr) : buyPrice;
                                 if (currentPrice > maxPrice) {
@@ -120,12 +147,11 @@ export default async function handler(req, res) {
                                 const trailingActive = maxPrice >= buyPrice * (1 + TRAILING_MIN / 100);
                                 const trailingTriggered = trailingActive && percentFromMax <= -TRAILING_DROP;
 
-                                // Примусовий продаж через MAX_HOLD_HOURS
+                                // Примусовий продаж
                                 const tokenInfoStr = await redis.get(`token_info_${mintAddress}_${chatId}`);
                                 const tokenInfo = tokenInfoStr ? JSON.parse(tokenInfoStr) : null;
                                 const buyTime = tokenInfo?.buyTime || Date.now();
                                 const heldHours = (Date.now() - buyTime) / (1000 * 60 * 60);
-                                const forceSell = heldHours >= MAX_HOLD_HOURS;
 
                                 let reason = null;
                                 if (percentChange >= settings.takeProfit) {
@@ -134,17 +160,11 @@ export default async function handler(req, res) {
                                     reason = `🛡 Stop-Loss (${percentChange.toFixed(2)}%)`;
                                 } else if (trailingTriggered) {
                                     reason = `📉 Trailing Stop (пік: +${((maxPrice-buyPrice)/buyPrice*100).toFixed(1)}%, впало: ${percentFromMax.toFixed(1)}%)`;
-                               } else if (forceSell && percentChange >= 0) {
-    reason = `⏰ Час вийшов +${percentChange.toFixed(2)}% — фіксуємо прибуток`;
-} else if (forceSell && percentChange < 0) {
-    // В мінусі — чекаємо відновлення ще 2 години
-    const tokenInfoStr2 = await redis.get(`token_info_${mintAddress}_${chatId}`);
-    const ti = tokenInfoStr2 ? JSON.parse(tokenInfoStr2) : null;
-    const extendedHours = (Date.now() - (ti?.buyTime || Date.now())) / (1000 * 60 * 60);
-    if (extendedHours >= MAX_HOLD_HOURS + 2) {
-        reason = `⏰ Час вийшов (${extendedHours.toFixed(1)}г) — мінімізуємо збиток ${percentChange.toFixed(2)}%`;
-    }
-}
+                                } else if (heldHours >= MAX_HOLD_HOURS && percentChange >= 0) {
+                                    reason = `⏰ Час вийшов +${percentChange.toFixed(2)}% — фіксуємо прибуток`;
+                                } else if (heldHours >= MAX_HOLD_HOURS + 2 && percentChange < 0) {
+                                    reason = `⏰ Час вийшов (${heldHours.toFixed(1)}г) — мінімізуємо збиток ${percentChange.toFixed(2)}%`;
+                                }
                                 
                                 if (reason) {
                                     const quoteRes = await fetch(
@@ -159,6 +179,7 @@ export default async function handler(req, res) {
                                             body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
                                         });
                                         const swapData = await swapRes.json();
+                                        if (!swapData.swapTransaction) continue;
                                         const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
                                         const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
                                         const { blockhash } = await connection.getLatestBlockhash("finalized");
@@ -179,6 +200,12 @@ export default async function handler(req, res) {
                                         userLogs.push(`${langDict.sell} ${symbol}\nПричина: ${reason}\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
                                         soldSomething = true;
                                         activeTokensCount--;
+                                    } else {
+                                        // ✅ Якщо Jupiter не може продати — позначаємо як honeypot
+                                        await redis.set(`last_scan_${chatId}`, 
+                                            `⚠️ <b>${symbol}</b> не можна продати (honeypot). Пропускаємо.`, 
+                                            { ex: 3600 }
+                                        );
                                     }
                                 }
                             }
@@ -205,9 +232,9 @@ export default async function handler(req, res) {
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=pepe&rankBy=trendingScoreH6&order=desc"),
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=bonk&rankBy=trendingScoreH6&order=desc"),
                                 fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=trump&rankBy=trendingScoreH6&order=desc")
+                                fetch("https://api.dexscreener.com/latest/dex/search?q=frog&rankBy=trendingScoreH6&order=desc")
                             ]);
                             const [d1, d2, d3, d4, d5, d6] = await Promise.all([
                                 res1.json(), res2.json(), res3.json(), res4.json(), res5.json(), res6.json()
@@ -225,7 +252,7 @@ export default async function handler(req, res) {
 
                             let skippedChain = 0, skippedSymbol = 0, skippedLiq = 0;
                             let skippedPump = 0, skippedIgnored = 0, skippedAge = 0;
-                            let skippedNoRoute = 0, foundCandidate = false;
+                            let skippedNoRoute = 0, skippedHoneypot = 0, foundCandidate = false;
                             
                             for (const pair of pairs) {
                                 if (pair.chainId !== "solana") { skippedChain++; continue; }
@@ -247,12 +274,14 @@ export default async function handler(req, res) {
                                 const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
                                 if (ageHours < 24) { skippedAge++; continue; }
                                 
-                                if (liq < 1000 || vol < 500 || fdv < 1000) { skippedLiq++; continue; }
-                                if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
+                                // ✅ Підвищені вимоги до ліквідності
+                                if (liq < 5000 || vol < 1000 || fdv < 5000) { skippedLiq++; continue; }
+                                if (priceChange24h > 200 || priceChange24h < -30) { skippedPump++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
 
+                                // ✅ Перевірка маршруту Jupiter
                                 try {
                                     const testQuote = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
@@ -264,6 +293,14 @@ export default async function handler(req, res) {
                                         continue;
                                     }
                                 } catch(e) { skippedNoRoute++; continue; }
+
+                                // ✅ Honeypot перевірка через RugCheck
+                                const isHoneypot = await checkHoneypot(tokenAddress);
+                                if (isHoneypot) {
+                                    skippedHoneypot++;
+                                    await redis.set(`ignored_token_${tokenAddress}`, "honeypot", { ex: 86400 });
+                                    continue;
+                                }
 
                                 foundCandidate = true;
                                 await redis.set(`last_scan_${chatId}`, 
@@ -377,7 +414,7 @@ Avoid: price change below -30% or above +200% in 24h.`;
 
                             if (!foundCandidate) {
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | В чорному списку: ${skippedIgnored}`, 
+                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | Honeypot: ${skippedHoneypot} | В ЧС: ${skippedIgnored}`, 
                                     { ex: 3600 }
                                 );
                             }
