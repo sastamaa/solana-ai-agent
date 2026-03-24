@@ -281,15 +281,11 @@ export default async function handler(req, res) {
             const targetMsgId = pinnedMsgId ? parseInt(pinnedMsgId) : messageId;
 
             try {
-                if (data === 'main_menu') {
-                    await redis.del(`state_${chatId}`);
-                    const solPrice = await getSolPrice();
-                    await editMessage(targetMsgId ? targetMsgId : messageId, chatId, t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(l));
-                    // Якщо натиснули з іншого повідомлення — редагуємо закріплене
-                    if (messageId !== targetMsgId) {
-                        await editMessage(chatId, targetMsgId, t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(l));
-                    }
-                }
+               if (data === 'main_menu') {
+    await redis.del(`state_${chatId}`);
+    const solPrice = await getSolPrice();
+    await editMessage(chatId, targetMsgId, t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(l));
+}
 
                 else if (data === 'portfolio') {
                     await editMessage(chatId, targetMsgId, "⏳ <i>Аналізую блокчейн...</i>", { inline_keyboard: [] });
