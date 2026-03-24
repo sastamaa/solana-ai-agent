@@ -302,8 +302,9 @@ export default async function handler(req, res) {
                                 const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
                                 if (ageHours < 6) { skippedAge++; continue; }
                                 
-                                if (liq < 5000 || vol < 1000 || fdv < 5000) { skippedLiq++; continue; }
-                                if (priceChange24h > 200 || priceChange24h < -30) { skippedPump++; continue; }
+                               if (liq < 1000 || vol < 300 || fdv < 1000) { skippedLiq++; continue; }
+if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
+if (ageHours < 1) { skippedAge++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
