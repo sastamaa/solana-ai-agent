@@ -37,7 +37,6 @@ const TRAILING_DROP = 8;
 const TRAILING_MIN = 8;
 const MAX_HOLD_HOURS = 4;
 
-// ✅ Актуальний курс SOL з кількох джерел
 async function getSolPrice() {
     try {
         const res = await fetch(
@@ -47,7 +46,6 @@ async function getSolPrice() {
         const data = await res.json();
         if (data?.solana?.usd) return parseFloat(data.solana.usd);
     } catch(e) {}
-    // Запасне джерело — Jupiter
     try {
         const res = await fetch(
             'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
@@ -57,10 +55,9 @@ async function getSolPrice() {
         const price = data?.data?.['So11111111111111111111111111111111111111112']?.price;
         if (price) return parseFloat(price);
     } catch(e) {}
-    return 130; // Fallback
+    return 88;
 }
 
-// ✅ Honeypot перевірка через RugCheck
 async function checkHoneypot(tokenAddress) {
     try {
         const res = await fetch(
@@ -100,7 +97,6 @@ export default async function handler(req, res) {
     const solMint = "So11111111111111111111111111111111111111112"; 
     const jupHeaders = { "Content-Type": "application/json", "x-api-key": jupiterKey };
 
-    // ✅ Отримуємо актуальний курс SOL один раз для всіх користувачів
     const solPriceUsd = await getSolPrice();
 
     const userKeys = await redis.keys("user_*");
@@ -159,7 +155,6 @@ export default async function handler(req, res) {
                                 const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                 const symbol = dexData.pairs[0].baseToken.symbol;
 
-                                // Трейлінг-стоп
                                 const maxPriceStr = await redis.get(`max_price_${mintAddress}_${chatId}`);
                                 let maxPrice = maxPriceStr ? parseFloat(maxPriceStr) : buyPrice;
                                 if (currentPrice > maxPrice) {
@@ -170,7 +165,6 @@ export default async function handler(req, res) {
                                 const trailingActive = maxPrice >= buyPrice * (1 + TRAILING_MIN / 100);
                                 const trailingTriggered = trailingActive && percentFromMax <= -TRAILING_DROP;
 
-                                // Час утримання
                                 const tokenInfoStr = await redis.get(`token_info_${mintAddress}_${chatId}`);
                                 const tokenInfo = tokenInfoStr ? JSON.parse(tokenInfoStr) : null;
                                 const buyTime = tokenInfo?.buyTime || Date.now();
@@ -216,7 +210,6 @@ export default async function handler(req, res) {
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`max_price_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
-                                        // ✅ SOL отримано з актуальним курсом
                                         const solReceived = (parseInt(quoteData.outAmount) / 1e9).toFixed(4);
                                         const usdReceived = (parseFloat(solReceived) * solPriceUsd).toFixed(2);
                                         await redis.set(`last_scan_${chatId}`, 
@@ -255,21 +248,45 @@ export default async function handler(req, res) {
                         await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
                     } else {
                         try {
-                            const [res1, res2, res3, res4, res5, res6] = await Promise.all([
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=bonk&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"),
-                                fetch("https://api.dexscreener.com/latest/dex/search?q=frog&rankBy=trendingScoreH6&order=desc")
-                            ]);
-                            const [d1, d2, d3, d4, d5, d6] = await Promise.all([
-                                res1.json(), res2.json(), res3.json(), res4.json(), res5.json(), res6.json()
-                            ]);
-                            const allPairs = [
-                                ...(d1.pairs||[]), ...(d2.pairs||[]), ...(d3.pairs||[]),
-                                ...(d4.pairs||[]), ...(d5.pairs||[]), ...(d6.pairs||[])
+                            // ✅ НОВИЙ БЛОК: token-boosts + різноманітні запити
+                            const searchQueries = [
+                                "https://api.dexscreener.com/token-boosts/top/v1",
+                                "https://api.dexscreener.com/token-boosts/latest/v1",
+                                "https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc",
+                                "https://api.dexscreener.com/latest/dex/search?q=baby&rankBy=trendingScoreH6&order=desc",
+                                "https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH1&order=desc",
+                                "https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH1&order=desc",
+                                "https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc",
+                                "https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"
                             ];
+
+                            const responses = await Promise.allSettled(
+                                searchQueries.map(url => fetch(url).then(r => r.json()))
+                            );
+
+                            const allPairs = [];
+                            for (const result of responses) {
+                                if (result.status !== 'fulfilled') continue;
+                                const data = result.value;
+                                // token-boosts повертає масив об'єктів з tokenAddress
+                                if (Array.isArray(data)) {
+                                    for (const item of data) {
+                                        if (item.tokenAddress && item.chainId === 'solana') {
+                                            try {
+                                                const pairRes = await fetch(
+                                                    `https://api.dexscreener.com/latest/dex/tokens/${item.tokenAddress}`,
+                                                    { signal: AbortSignal.timeout(3000) }
+                                                );
+                                                const pairData = await pairRes.json();
+                                                if (pairData.pairs) allPairs.push(...pairData.pairs);
+                                            } catch(e) {}
+                                        }
+                                    }
+                                } else if (data.pairs) {
+                                    allPairs.push(...data.pairs);
+                                }
+                            }
+
                             const seen = new Set();
                             const pairs = allPairs.filter(p => {
                                 if (!p.pairAddress || seen.has(p.pairAddress)) return false;
@@ -297,14 +314,14 @@ export default async function handler(req, res) {
                                 const fdv = pair.fdv || 0; 
                                 const priceChange24h = pair.priceChange?.h24 || 0;
 
-                                // ✅ Вік знижено до 6 годин
+                                // ✅ Мінімальні фільтри — не відсіювати занадто багато
+                                if (liq < 500 || vol < 200) { skippedLiq++; continue; }
+                                if (priceChange24h > 500 || priceChange24h < -60) { skippedPump++; continue; }
+
+                                // ✅ Вік — тільки дуже нові (менше 30 хвилин) відхиляємо
                                 const pairCreatedAt = pair.pairCreatedAt || 0;
                                 const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
-                                if (ageHours < 6) { skippedAge++; continue; }
-                                
-                               if (liq < 1000 || vol < 300 || fdv < 1000) { skippedLiq++; continue; }
-if (priceChange24h > 300 || priceChange24h < -50) { skippedPump++; continue; }
-if (ageHours < 1) { skippedAge++; continue; }
+                                if (ageHours < 0.5) { skippedAge++; continue; }
                                 
                                 const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
                                 if (isIgnored) { skippedIgnored++; continue; }
@@ -313,7 +330,7 @@ if (ageHours < 1) { skippedAge++; continue; }
                                 try {
                                     const testQuote = await fetch(
                                         `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
-                                        { headers: jupHeaders }
+                                        { headers: jupHeaders, signal: AbortSignal.timeout(4000) }
                                     );
                                     const testData = await testQuote.json();
                                     if (testData.error || !testData.outAmount) { 
@@ -331,10 +348,9 @@ if (ageHours < 1) { skippedAge++; continue; }
                                 }
 
                                 foundCandidate = true;
-                                // ✅ Показуємо актуальний курс SOL в повідомленні
                                 const tradeUsd = (settings.tradeAmount * solPriceUsd).toFixed(2);
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${(vol/fdv*100).toFixed(1)}% | Зміна: ${priceChange24h}%\n💰 SOL: $${solPriceUsd.toFixed(2)}`, 
+                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${fdv > 0 ? (vol/fdv*100).toFixed(1) : '?'}% | Зміна: ${priceChange24h}%\n💰 SOL: $${solPriceUsd.toFixed(2)}`, 
                                     { ex: 3600 }
                                 );
 
@@ -354,14 +370,14 @@ Token data:
 - Liquidity: $${Math.round(liq)}
 - Volume 24h: $${Math.round(vol)}
 - Market Cap: $${Math.round(fdv)}
-- Vol/MCap ratio: ${(vol/fdv*100).toFixed(1)}%
+- Vol/MCap ratio: ${fdv > 0 ? (vol/fdv*100).toFixed(1) : 'N/A'}%
 - Price change 24h: ${priceChange24h}%
 
 Strategy: SHORT-TERM scalping. BUY if score >= 6.
-Prefer tokens with: positive momentum, high volume, liquidity $10k+.
+Prefer tokens with: positive momentum, high volume, liquidity $5k+.
 Vol/MCap 5%+ is GREAT. 10%+ is EXCELLENT.
-$50k+ liquidity is GOOD. $500k+ is EXCELLENT.
-Avoid: price change below -30% or above +200% in 24h.`;
+$10k+ liquidity is GOOD. $100k+ is EXCELLENT.
+Avoid: price change below -60% or above +500% in 24h.`;
 
                                 const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                                     method: "POST",
@@ -382,6 +398,7 @@ Avoid: price change below -30% or above +200% in 24h.`;
                                 if (!groqData.choices || !groqData.choices[0]) break;
 
                                 const aiDecision = groqData.choices[0].message.content.trim();
+                                // ✅ ВИПРАВЛЕНО: прибрані подвійні слеші в regex
                                 const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
                                 const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
                                 const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
@@ -432,7 +449,8 @@ Avoid: price change below -30% or above +200% in 24h.`;
                                     break;
                                     
                                 } else {
-                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 1800 });
+                                    // ✅ Скорочено час ігнору до 10 хвилин
+                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 600 });
                                     const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
                                         `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
                                         (analysis ? `${analysis}\n` : "") +
