@@ -120,7 +120,7 @@ export default async function handler(req, res) {
         catch (e) { continue; }
         
         const settings = userData.settings || { 
-            tradeAmount: 0.005, 
+            tradeAmount: 0.02,
             takeProfit: TAKE_PROFIT, 
             stopLoss: STOP_LOSS 
         };
@@ -128,7 +128,9 @@ export default async function handler(req, res) {
         settings.stopLoss = settings.stopLoss || STOP_LOSS;
 
         let soldSomething = false; 
-        let activeTokensCount = 0; 
+        let activeTokensCount = 0;
+        // ✅ Збираємо адреси вже куплених токенів щоб не купувати повторно
+        const ownedMints = new Set();
 
         try {
             const accounts = await connection.getParsedTokenAccountsByOwner(
@@ -143,12 +145,17 @@ export default async function handler(req, res) {
                 const mintAddress = acc.account.data.parsed.info.mint;
                 
                 if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
-                    activeTokensCount++; 
+                    activeTokensCount++;
+                    ownedMints.add(mintAddress); // ✅ запам'ятовуємо що вже маємо
+                    
                     const buyPriceStr = await redis.get(`buy_price_${mintAddress}_${chatId}`);
                     if (buyPriceStr) {
                         try {
                             const buyPrice = parseFloat(buyPriceStr);
-                            const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`);
+                            const dexRes = await fetch(
+                                `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
+                                { signal: AbortSignal.timeout(5000) }
+                            );
                             const dexData = await dexRes.json();
                             if (dexData.pairs && dexData.pairs.length > 0) {
                                 const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
@@ -210,6 +217,7 @@ export default async function handler(req, res) {
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`max_price_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
+                                        ownedMints.delete(mintAddress);
                                         const solReceived = (parseInt(quoteData.outAmount) / 1e9).toFixed(4);
                                         const usdReceived = (parseFloat(solReceived) * solPriceUsd).toFixed(2);
                                         await redis.set(`last_scan_${chatId}`, 
@@ -241,120 +249,127 @@ export default async function handler(req, res) {
                     const balUsd = (parseFloat(balSol) * solPriceUsd).toFixed(2);
                     await redis.set(`last_scan_${chatId}`, `⚠️ Недостатньо SOL. Баланс: ${balSol} SOL (~$${balUsd}). Поповніть гаманець.`, { ex: 3600 });
                 } else {
+                    // ✅ Перевіряємо active_buy — якщо токен вже є в гаманці, скидаємо флаг
                     const recentBuy = await redis.get(`active_buy_${chatId}`);
-                    if (recentBuy && activeTokensCount === 0) {
-                        await redis.del(`active_buy_${chatId}`);
-                    } else if (recentBuy) {
-                        await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
-                    } else {
-                        try {
-                            // ✅ НОВИЙ БЛОК: token-boosts + різноманітні запити
-                            const searchQueries = [
-                                "https://api.dexscreener.com/token-boosts/top/v1",
-                                "https://api.dexscreener.com/token-boosts/latest/v1",
-                                "https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc",
-                                "https://api.dexscreener.com/latest/dex/search?q=baby&rankBy=trendingScoreH6&order=desc",
-                                "https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH1&order=desc",
-                                "https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH1&order=desc",
-                                "https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc",
-                                "https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"
-                            ];
+                    if (recentBuy) {
+                        if (ownedMints.has(recentBuy) || activeTokensCount === 0) {
+                            await redis.del(`active_buy_${chatId}`);
+                        } else {
+                            await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
+                            continue; // переходимо до наступного користувача
+                        }
+                    }
 
-                            const responses = await Promise.allSettled(
-                                searchQueries.map(url => fetch(url).then(r => r.json()))
-                            );
+                    try {
+                        const searchQueries = [
+                            "https://api.dexscreener.com/token-boosts/top/v1",
+                            "https://api.dexscreener.com/token-boosts/latest/v1",
+                            "https://api.dexscreener.com/latest/dex/search?q=ai&rankBy=trendingScoreH6&order=desc",
+                            "https://api.dexscreener.com/latest/dex/search?q=baby&rankBy=trendingScoreH6&order=desc",
+                            "https://api.dexscreener.com/latest/dex/search?q=inu&rankBy=trendingScoreH1&order=desc",
+                            "https://api.dexscreener.com/latest/dex/search?q=moon&rankBy=trendingScoreH1&order=desc",
+                            "https://api.dexscreener.com/latest/dex/search?q=dog&rankBy=trendingScoreH6&order=desc",
+                            "https://api.dexscreener.com/latest/dex/search?q=cat&rankBy=trendingScoreH6&order=desc"
+                        ];
 
-                            const allPairs = [];
-                            for (const result of responses) {
-                                if (result.status !== 'fulfilled') continue;
-                                const data = result.value;
-                                // token-boosts повертає масив об'єктів з tokenAddress
-                                if (Array.isArray(data)) {
-                                    for (const item of data) {
-                                        if (item.tokenAddress && item.chainId === 'solana') {
-                                            try {
-                                                const pairRes = await fetch(
-                                                    `https://api.dexscreener.com/latest/dex/tokens/${item.tokenAddress}`,
-                                                    { signal: AbortSignal.timeout(3000) }
-                                                );
-                                                const pairData = await pairRes.json();
-                                                if (pairData.pairs) allPairs.push(...pairData.pairs);
-                                            } catch(e) {}
-                                        }
+                        const responses = await Promise.allSettled(
+                            searchQueries.map(url => fetch(url, { signal: AbortSignal.timeout(5000) }).then(r => r.json()))
+                        );
+
+                        const allPairs = [];
+                        for (const result of responses) {
+                            if (result.status !== 'fulfilled') continue;
+                            const data = result.value;
+                            if (Array.isArray(data)) {
+                                for (const item of data) {
+                                    if (item.tokenAddress && item.chainId === 'solana') {
+                                        try {
+                                            const pairRes = await fetch(
+                                                `https://api.dexscreener.com/latest/dex/tokens/${item.tokenAddress}`,
+                                                { signal: AbortSignal.timeout(3000) }
+                                            );
+                                            const pairData = await pairRes.json();
+                                            if (pairData.pairs) allPairs.push(...pairData.pairs);
+                                        } catch(e) {}
                                     }
-                                } else if (data.pairs) {
-                                    allPairs.push(...data.pairs);
                                 }
+                            } else if (data.pairs) {
+                                allPairs.push(...data.pairs);
                             }
+                        }
 
-                            const seen = new Set();
-                            const pairs = allPairs.filter(p => {
-                                if (!p.pairAddress || seen.has(p.pairAddress)) return false;
-                                seen.add(p.pairAddress);
-                                return true;
-                            });
+                        const seen = new Set();
+                        const pairs = allPairs.filter(p => {
+                            if (!p.pairAddress || seen.has(p.pairAddress)) return false;
+                            seen.add(p.pairAddress);
+                            return true;
+                        });
 
-                            let skippedChain = 0, skippedSymbol = 0, skippedLiq = 0;
-                            let skippedPump = 0, skippedIgnored = 0, skippedAge = 0;
-                            let skippedNoRoute = 0, skippedHoneypot = 0, foundCandidate = false;
+                        let skippedChain = 0, skippedSymbol = 0, skippedLiq = 0;
+                        let skippedPump = 0, skippedIgnored = 0, skippedAge = 0;
+                        let skippedNoRoute = 0, skippedHoneypot = 0, skippedOwned = 0;
+                        let foundCandidate = false;
+                        
+                        for (const pair of pairs) {
+                            if (pair.chainId !== "solana") { skippedChain++; continue; }
                             
-                            for (const pair of pairs) {
-                                if (pair.chainId !== "solana") { skippedChain++; continue; }
-                                
-                                const sym = pair.baseToken.symbol.toUpperCase();
-                                const tokenAddress = pair.baseToken.address;
-                                
-                                if (BANNED_SYMBOLS.includes(sym)) { skippedSymbol++; continue; }
-                                if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continue; }
-                                if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
-                                if (tokenAddress === solMint) continue;
-                                
-                                const liq = pair.liquidity?.usd || 0;
-                                const vol = pair.volume?.h24 || 0;
-                                const fdv = pair.fdv || 0; 
-                                const priceChange24h = pair.priceChange?.h24 || 0;
+                            const sym = pair.baseToken.symbol.toUpperCase();
+                            const tokenAddress = pair.baseToken.address;
+                            
+                            if (BANNED_SYMBOLS.includes(sym)) { skippedSymbol++; continue; }
+                            if (BANNED_SUBSTRINGS.some(sub => sym.includes(sub))) { skippedSymbol++; continue; }
+                            if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
+                            if (tokenAddress === solMint) continue;
 
-                                // ✅ Мінімальні фільтри — не відсіювати занадто багато
-                                if (liq < 500 || vol < 200) { skippedLiq++; continue; }
-                                if (priceChange24h > 500 || priceChange24h < -60) { skippedPump++; continue; }
+                            // ✅ Пропускаємо токени які вже є в гаманці
+                            if (ownedMints.has(tokenAddress)) { skippedOwned++; continue; }
+                            
+                            const liq = pair.liquidity?.usd || 0;
+                            const vol = pair.volume?.h24 || 0;
+                            const fdv = pair.fdv || 0; 
+                            const priceChange24h = pair.priceChange?.h24 || 0;
 
-                                // ✅ Вік — тільки дуже нові (менше 30 хвилин) відхиляємо
-                                const pairCreatedAt = pair.pairCreatedAt || 0;
-                                const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
-                                if (ageHours < 0.5) { skippedAge++; continue; }
-                                
-                                const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
-                                if (isIgnored) { skippedIgnored++; continue; }
+                            if (liq < 500 || vol < 200) { skippedLiq++; continue; }
+                            if (priceChange24h > 500 || priceChange24h < -60) { skippedPump++; continue; }
 
-                                // Jupiter перевірка маршруту
-                                try {
-                                    const testQuote = await fetch(
-                                        `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
-                                        { headers: jupHeaders, signal: AbortSignal.timeout(4000) }
-                                    );
-                                    const testData = await testQuote.json();
-                                    if (testData.error || !testData.outAmount) { 
-                                        skippedNoRoute++; 
-                                        continue;
-                                    }
-                                } catch(e) { skippedNoRoute++; continue; }
+                            const pairCreatedAt = pair.pairCreatedAt || 0;
+                            const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
+                            if (ageHours < 0.5) { skippedAge++; continue; }
 
-                                // Honeypot перевірка
-                                const isHoneypot = await checkHoneypot(tokenAddress);
-                                if (isHoneypot) {
-                                    skippedHoneypot++;
-                                    await redis.set(`ignored_token_${tokenAddress}`, "honeypot", { ex: 86400 });
+                            // ✅ Перевіряємо чи вже куплено цей токен (Redis захист)
+                            const alreadyBought = await redis.get(`buy_price_${tokenAddress}_${chatId}`);
+                            if (alreadyBought) { skippedOwned++; continue; }
+                            
+                            const isIgnored = await redis.get(`ignored_token_${tokenAddress}`);
+                            if (isIgnored) { skippedIgnored++; continue; }
+
+                            try {
+                                const testQuote = await fetch(
+                                    `https://api.jup.ag/swap/v1/quote?inputMint=${tokenAddress}&outputMint=${solMint}&amount=1000000&slippageBps=300`,
+                                    { headers: jupHeaders, signal: AbortSignal.timeout(4000) }
+                                );
+                                const testData = await testQuote.json();
+                                if (testData.error || !testData.outAmount) { 
+                                    skippedNoRoute++; 
                                     continue;
                                 }
+                            } catch(e) { skippedNoRoute++; continue; }
 
-                                foundCandidate = true;
-                                const tradeUsd = (settings.tradeAmount * solPriceUsd).toFixed(2);
-                                await redis.set(`last_scan_${chatId}`, 
-                                    `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${fdv > 0 ? (vol/fdv*100).toFixed(1) : '?'}% | Зміна: ${priceChange24h}%\n💰 SOL: $${solPriceUsd.toFixed(2)}`, 
-                                    { ex: 3600 }
-                                );
+                            const isHoneypot = await checkHoneypot(tokenAddress);
+                            if (isHoneypot) {
+                                skippedHoneypot++;
+                                await redis.set(`ignored_token_${tokenAddress}`, "honeypot", { ex: 86400 });
+                                continue;
+                            }
 
-                                const prompt = `You are an aggressive crypto scalper. Analyze this Solana token for a SHORT-TERM trade (1-4 hours) and respond ONLY in this exact format:
+                            foundCandidate = true;
+                            const tradeUsd = (settings.tradeAmount * solPriceUsd).toFixed(2);
+                            await redis.set(`last_scan_${chatId}`, 
+                                `🔎 Аналізую: <b>${sym}</b>\nЛік: $${Math.round(liq).toLocaleString()} | Об'єм: $${Math.round(vol).toLocaleString()}\nVol/MCap: ${fdv > 0 ? (vol/fdv*100).toFixed(1) : '?'}% | Зміна: ${priceChange24h}%\n💰 SOL: $${solPriceUsd.toFixed(2)}`, 
+                                { ex: 3600 }
+                            );
+
+                            const prompt = `You are an aggressive crypto scalper. Analyze this Solana token for a SHORT-TERM trade (1-4 hours) and respond ONLY in this exact format:
 
 DECISION: BUY or WAIT
 SCORE: X/10
@@ -379,97 +394,98 @@ Vol/MCap 5%+ is GREAT. 10%+ is EXCELLENT.
 $10k+ liquidity is GOOD. $100k+ is EXCELLENT.
 Avoid: price change below -60% or above +500% in 24h.`;
 
-                                const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                                    method: "POST",
-                                    headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
-                                    body: JSON.stringify({ 
-                                        model: "llama-3.3-70b-versatile",
-                                        messages: [{ role: "user", content: prompt }], 
-                                        temperature: 0.2
-                                    })
-                                });
-                                const groqData = await groqRes.json();
+                            const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                                method: "POST",
+                                headers: { "Authorization": `Bearer ${groqKey}`, "Content-Type": "application/json" },
+                                body: JSON.stringify({ 
+                                    model: "llama-3.3-70b-versatile",
+                                    messages: [{ role: "user", content: prompt }], 
+                                    temperature: 0.2
+                                })
+                            });
+                            const groqData = await groqRes.json();
 
-                                if (!groqRes.ok || groqData.error) {
-                                    const errMsg = groqData?.error?.message || "Невідома помилка";
-                                    await redis.set(`last_scan_${chatId}`, `⚠️ Помилка Groq: ${errMsg}`, { ex: 3600 });
-                                    break;
-                                }
-                                if (!groqData.choices || !groqData.choices[0]) break;
-
-                                const aiDecision = groqData.choices[0].message.content.trim();
-                                // ✅ ВИПРАВЛЕНО: прибрані подвійні слеші в regex
-                                const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
-                                const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
-                                const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
-                                const score = scoreMatch ? scoreMatch[1] : "?";
-                                const reason = reasonMatch ? reasonMatch[1].trim() : "";
-                                const analysis = analysisMatch ? analysisMatch[1].trim() : "";
-
-                                if (aiDecision.toUpperCase().includes("DECISION: BUY")) {
-                                    const quoteRes = await fetch(
-                                        `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=200`, 
-                                        { headers: jupHeaders }
-                                    );
-                                    const quoteData = await quoteRes.json();
-                                    if (quoteData.error) {
-                                        await redis.set(`last_scan_${chatId}`, `❌ Jupiter не зміг купити ${sym}`, { ex: 3600 });
-                                        break;
-                                    }
-                                    const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
-                                        method: "POST", headers: jupHeaders, 
-                                        body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
-                                    });
-                                    const swapData = await swapRes.json();
-                                    if (!swapData.swapTransaction) {
-                                        await redis.set(`last_scan_${chatId}`, `❌ Транзакція не створена для ${sym}`, { ex: 3600 });
-                                        break;
-                                    }
-                                    const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
-                                    const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
-                                    const { blockhash } = await connection.getLatestBlockhash("finalized");
-                                    transaction.message.recentBlockhash = blockhash;
-                                    transaction.sign([wallet]);
-                                    const txid = await connection.sendRawTransaction(transaction.serialize(), { 
-                                        skipPreflight: true, maxRetries: 5 
-                                    });
-                                    await new Promise(resolve => setTimeout(resolve, 2000));
-                                    const priceToSave = (pair.priceUsd || "0.000001").toString();
-                                    await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave);
-                                    await redis.set(`max_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 86400 });
-                                    await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
-                                        symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid
-                                    }), { ex: 86400 });
-                                    await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 300 });
-                                    await redis.set(`last_scan_${chatId}`, 
-                                        `✅ <b>Куплено: ${sym}</b>\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
-                                        { ex: 3600 }
-                                    );
-                                    userLogs.push(`${langDict.buy} ${sym}\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
-                                    break;
-                                    
-                                } else {
-                                    // ✅ Скорочено час ігнору до 10 хвилин
-                                    await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 600 });
-                                    const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
-                                        `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
-                                        (analysis ? `${analysis}\n` : "") +
-                                        `🧠 <i>${reason}</i>`;
-                                    await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
-                                    continue;
-                                }
+                            if (!groqRes.ok || groqData.error) {
+                                const errMsg = groqData?.error?.message || "Невідома помилка";
+                                await redis.set(`last_scan_${chatId}`, `⚠️ Помилка Groq: ${errMsg}`, { ex: 3600 });
+                                break;
                             }
+                            if (!groqData.choices || !groqData.choices[0]) break;
 
-                            if (!foundCandidate) {
+                            const aiDecision = groqData.choices[0].message.content.trim();
+                            // ✅ ВИПРАВЛЕНО regex — без подвійних слешів
+                            const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
+                            const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
+                            const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
+                            const score = scoreMatch ? scoreMatch[1] : "?";
+                            const reason = reasonMatch ? reasonMatch[1].trim() : "";
+                            const analysis = analysisMatch ? analysisMatch[1].trim() : "";
+
+                            if (aiDecision.toUpperCase().includes("DECISION: BUY")) {
+                                const quoteRes = await fetch(
+                                    `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=200`, 
+                                    { headers: jupHeaders }
+                                );
+                                const quoteData = await quoteRes.json();
+                                if (quoteData.error) {
+                                    await redis.set(`last_scan_${chatId}`, `❌ Jupiter не зміг купити ${sym}`, { ex: 3600 });
+                                    break;
+                                }
+                                const swapRes = await fetch("https://api.jup.ag/swap/v1/swap", { 
+                                    method: "POST", headers: jupHeaders, 
+                                    body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) 
+                                });
+                                const swapData = await swapRes.json();
+                                if (!swapData.swapTransaction) {
+                                    await redis.set(`last_scan_${chatId}`, `❌ Транзакція не створена для ${sym}`, { ex: 3600 });
+                                    break;
+                                }
+                                const swapTransactionBuf = Buffer.from(swapData.swapTransaction, "base64");
+                                const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                                const { blockhash } = await connection.getLatestBlockhash("finalized");
+                                transaction.message.recentBlockhash = blockhash;
+                                transaction.sign([wallet]);
+                                const txid = await connection.sendRawTransaction(transaction.serialize(), { 
+                                    skipPreflight: true, maxRetries: 5 
+                                });
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                const priceToSave = (pair.priceUsd || "0.000001").toString();
+                                // ✅ Зберігаємо на 7 днів щоб не губилось
+                                await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 604800 });
+                                await redis.set(`max_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 604800 });
+                                await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
+                                    symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid
+                                }), { ex: 604800 });
+                                // ✅ active_buy на 30 хвилин щоб не купував повторно
+                                await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 1800 });
+                                ownedMints.add(tokenAddress);
                                 await redis.set(`last_scan_${chatId}`, 
-                                    `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | Honeypot: ${skippedHoneypot} | В ЧС: ${skippedIgnored}\n💰 Курс SOL: $${solPriceUsd.toFixed(2)}`, 
+                                    `✅ <b>Куплено: ${sym}</b>\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
                                     { ex: 3600 }
                                 );
+                                userLogs.push(`${langDict.buy} ${sym}\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n🔍 <a href="https://solscan.io/tx/${txid}">Tx</a>`);
+                                break;
+                                
+                            } else {
+                                await redis.set(`ignored_token_${tokenAddress}`, "true", { ex: 600 });
+                                const scanText = `🔎 <b>Відхилено: ${sym}</b>\n` +
+                                    `📊 <b>Оцінка ШІ: ${score}/10</b>\n` +
+                                    (analysis ? `${analysis}\n` : "") +
+                                    `🧠 <i>${reason}</i>`;
+                                await redis.set(`last_scan_${chatId}`, scanText, { ex: 3600 });
+                                continue;
                             }
-
-                        } catch (apiError) {
-                            await redis.set(`last_scan_${chatId}`, `⚠️ Помилка мережі: ${apiError.message}`, { ex: 3600 });
                         }
+
+                        if (!foundCandidate) {
+                            await redis.set(`last_scan_${chatId}`, 
+                                `🔧 Всі ${pairs.length} монет відфільтровані!\nІнші мережі: ${skippedChain} | Символи: ${skippedSymbol} | Вік: ${skippedAge} | Ліквідність: ${skippedLiq} | Памп/Дамп: ${skippedPump} | Без маршруту: ${skippedNoRoute} | Honeypot: ${skippedHoneypot} | В ЧС: ${skippedIgnored} | Вже куплено: ${skippedOwned}\n💰 Курс SOL: $${solPriceUsd.toFixed(2)}`, 
+                                { ex: 3600 }
+                            );
+                        }
+
+                    } catch (apiError) {
+                        await redis.set(`last_scan_${chatId}`, `⚠️ Помилка мережі: ${apiError.message}`, { ex: 3600 });
                     }
                 }
             }
