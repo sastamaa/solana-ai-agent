@@ -107,7 +107,7 @@ export default async function handler(req, res) {
         let userLogs = [];
         
         let userDataStr = await redis.get(key);
-        if (!userDataStr) continue;
+        if (!userDataStr) continue; 
         
         const userData = typeof userDataStr === "string" ? JSON.parse(userDataStr) : userDataStr;
         // ✅ Перевіряємо isActive — якщо false, пропускаємо користувача
