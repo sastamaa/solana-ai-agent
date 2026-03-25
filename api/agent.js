@@ -110,7 +110,8 @@ export default async function handler(req, res) {
         if (!userDataStr) continue;
         
         const userData = typeof userDataStr === "string" ? JSON.parse(userDataStr) : userDataStr;
-        if (!userData.isActive || !userData.privateKey) continue;
+        // ✅ Перевіряємо isActive — якщо false, пропускаємо користувача
+        if (userData.isActive === false || !userData.privateKey) continue;
         
         const lang = userData.lang || "uk"; 
         const langDict = t[lang];
@@ -129,7 +130,6 @@ export default async function handler(req, res) {
 
         let soldSomething = false; 
         let activeTokensCount = 0;
-        // ✅ Збираємо адреси вже куплених токенів щоб не купувати повторно
         const ownedMints = new Set();
 
         try {
@@ -146,9 +146,33 @@ export default async function handler(req, res) {
                 
                 if (tokenAmountInfo.uiAmount > 0 && mintAddress !== solMint) {
                     activeTokensCount++;
-                    ownedMints.add(mintAddress); // ✅ запам'ятовуємо що вже маємо
+                    ownedMints.add(mintAddress);
                     
                     const buyPriceStr = await redis.get(`buy_price_${mintAddress}_${chatId}`);
+
+                    // ✅ Якщо токен є в гаманці але немає ціни покупки — зберігаємо поточну ціну
+                    if (!buyPriceStr) {
+                        try {
+                            const dexRes = await fetch(
+                                `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
+                                { signal: AbortSignal.timeout(5000) }
+                            );
+                            const dexData = await dexRes.json();
+                            if (dexData.pairs && dexData.pairs.length > 0) {
+                                const currentPriceForSave = dexData.pairs[0].priceUsd;
+                                const symForSave = dexData.pairs[0].baseToken.symbol;
+                                if (currentPriceForSave) {
+                                    await redis.set(`buy_price_${mintAddress}_${chatId}`, currentPriceForSave.toString(), { ex: 604800 });
+                                    await redis.set(`max_price_${mintAddress}_${chatId}`, currentPriceForSave.toString(), { ex: 604800 });
+                                    await redis.set(`token_info_${mintAddress}_${chatId}`, JSON.stringify({
+                                        symbol: symForSave, buyPrice: currentPriceForSave.toString(), buyTime: Date.now() - (3 * 60 * 60 * 1000), txid: "recovered"
+                                    }), { ex: 604800 });
+                                }
+                            }
+                        } catch(e) {}
+                        continue; // Продаємо на наступному скані коли вже є ціна
+                    }
+
                     if (buyPriceStr) {
                         try {
                             const buyPrice = parseFloat(buyPriceStr);
@@ -166,7 +190,7 @@ export default async function handler(req, res) {
                                 let maxPrice = maxPriceStr ? parseFloat(maxPriceStr) : buyPrice;
                                 if (currentPrice > maxPrice) {
                                     maxPrice = currentPrice;
-                                    await redis.set(`max_price_${mintAddress}_${chatId}`, maxPrice.toString(), { ex: 86400 });
+                                    await redis.set(`max_price_${mintAddress}_${chatId}`, maxPrice.toString(), { ex: 604800 });
                                 }
                                 const percentFromMax = ((currentPrice - maxPrice) / maxPrice) * 100;
                                 const trailingActive = maxPrice >= buyPrice * (1 + TRAILING_MIN / 100);
@@ -174,7 +198,7 @@ export default async function handler(req, res) {
 
                                 const tokenInfoStr = await redis.get(`token_info_${mintAddress}_${chatId}`);
                                 const tokenInfo = tokenInfoStr ? JSON.parse(tokenInfoStr) : null;
-                                const buyTime = tokenInfo?.buyTime || Date.now();
+                                const buyTime = tokenInfo?.buyTime || (Date.now() - MAX_HOLD_HOURS * 60 * 60 * 1000);
                                 const heldHours = (Date.now() - buyTime) / (1000 * 60 * 60);
 
                                 let reason = null;
@@ -217,6 +241,7 @@ export default async function handler(req, res) {
                                         await redis.del(`token_info_${mintAddress}_${chatId}`);
                                         await redis.del(`max_price_${mintAddress}_${chatId}`);
                                         await redis.del(`active_buy_${chatId}`);
+                                        await redis.del(`buy_lock_${chatId}`);
                                         ownedMints.delete(mintAddress);
                                         const solReceived = (parseInt(quoteData.outAmount) / 1e9).toFixed(4);
                                         const usdReceived = (parseFloat(solReceived) * solPriceUsd).toFixed(2);
@@ -249,14 +274,20 @@ export default async function handler(req, res) {
                     const balUsd = (parseFloat(balSol) * solPriceUsd).toFixed(2);
                     await redis.set(`last_scan_${chatId}`, `⚠️ Недостатньо SOL. Баланс: ${balSol} SOL (~$${balUsd}). Поповніть гаманець.`, { ex: 3600 });
                 } else {
-                    // ✅ Перевіряємо active_buy — якщо токен вже є в гаманці, скидаємо флаг
+                    // ✅ Подвійний захист від повторної купівлі
+                    const buyLock = await redis.get(`buy_lock_${chatId}`);
+                    if (buyLock) {
+                        await redis.set(`last_scan_${chatId}`, "⏳ Покупка вже виконується, чекаємо...", { ex: 60 });
+                        continue;
+                    }
+
                     const recentBuy = await redis.get(`active_buy_${chatId}`);
                     if (recentBuy) {
                         if (ownedMints.has(recentBuy) || activeTokensCount === 0) {
                             await redis.del(`active_buy_${chatId}`);
                         } else {
                             await redis.set(`last_scan_${chatId}`, "⏳ Нещодавно куплено. Очікуємо підтвердження...", { ex: 300 });
-                            continue; // переходимо до наступного користувача
+                            continue;
                         }
                     }
 
@@ -321,7 +352,6 @@ export default async function handler(req, res) {
                             if (BANNED_ADDRESSES.includes(tokenAddress)) continue;
                             if (tokenAddress === solMint) continue;
 
-                            // ✅ Пропускаємо токени які вже є в гаманці
                             if (ownedMints.has(tokenAddress)) { skippedOwned++; continue; }
                             
                             const liq = pair.liquidity?.usd || 0;
@@ -336,7 +366,6 @@ export default async function handler(req, res) {
                             const ageHours = (Date.now() - pairCreatedAt) / (1000 * 60 * 60);
                             if (ageHours < 0.5) { skippedAge++; continue; }
 
-                            // ✅ Перевіряємо чи вже куплено цей токен (Redis захист)
                             const alreadyBought = await redis.get(`buy_price_${tokenAddress}_${chatId}`);
                             if (alreadyBought) { skippedOwned++; continue; }
                             
@@ -413,7 +442,7 @@ Avoid: price change below -60% or above +500% in 24h.`;
                             if (!groqData.choices || !groqData.choices[0]) break;
 
                             const aiDecision = groqData.choices[0].message.content.trim();
-                            // ✅ ВИПРАВЛЕНО regex — без подвійних слешів
+                            // ✅ Правильний regex без подвійних слешів
                             const scoreMatch = aiDecision.match(/SCORE:\s*(\d+)/i);
                             const reasonMatch = aiDecision.match(/REASON:\s*(.+)/i);
                             const analysisMatch = aiDecision.match(/ANALYSIS:([\s\S]+?)REASON/i);
@@ -422,12 +451,16 @@ Avoid: price change below -60% or above +500% in 24h.`;
                             const analysis = analysisMatch ? analysisMatch[1].trim() : "";
 
                             if (aiDecision.toUpperCase().includes("DECISION: BUY")) {
+                                // ✅ Ставимо lock ПЕРЕД транзакцією
+                                await redis.set(`buy_lock_${chatId}`, "1", { ex: 120 });
+
                                 const quoteRes = await fetch(
                                     `https://api.jup.ag/swap/v1/quote?inputMint=${solMint}&outputMint=${tokenAddress}&amount=${tradeLamports}&slippageBps=200`, 
                                     { headers: jupHeaders }
                                 );
                                 const quoteData = await quoteRes.json();
                                 if (quoteData.error) {
+                                    await redis.del(`buy_lock_${chatId}`);
                                     await redis.set(`last_scan_${chatId}`, `❌ Jupiter не зміг купити ${sym}`, { ex: 3600 });
                                     break;
                                 }
@@ -437,6 +470,7 @@ Avoid: price change below -60% or above +500% in 24h.`;
                                 });
                                 const swapData = await swapRes.json();
                                 if (!swapData.swapTransaction) {
+                                    await redis.del(`buy_lock_${chatId}`);
                                     await redis.set(`last_scan_${chatId}`, `❌ Транзакція не створена для ${sym}`, { ex: 3600 });
                                     break;
                                 }
@@ -448,16 +482,15 @@ Avoid: price change below -60% or above +500% in 24h.`;
                                 const txid = await connection.sendRawTransaction(transaction.serialize(), { 
                                     skipPreflight: true, maxRetries: 5 
                                 });
-                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                await new Promise(resolve => setTimeout(resolve, 3000));
                                 const priceToSave = (pair.priceUsd || "0.000001").toString();
-                                // ✅ Зберігаємо на 7 днів щоб не губилось
                                 await redis.set(`buy_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 604800 });
                                 await redis.set(`max_price_${tokenAddress}_${chatId}`, priceToSave, { ex: 604800 });
                                 await redis.set(`token_info_${tokenAddress}_${chatId}`, JSON.stringify({
                                     symbol: sym, buyPrice: priceToSave, buyTime: Date.now(), txid
                                 }), { ex: 604800 });
-                                // ✅ active_buy на 30 хвилин щоб не купував повторно
                                 await redis.set(`active_buy_${chatId}`, tokenAddress, { ex: 1800 });
+                                await redis.del(`buy_lock_${chatId}`);
                                 ownedMints.add(tokenAddress);
                                 await redis.set(`last_scan_${chatId}`, 
                                     `✅ <b>Куплено: ${sym}</b>\n💰 Витрачено: ${settings.tradeAmount} SOL (~$${tradeUsd})\n📊 Оцінка: ${score}/10\n🧠 <i>${reason}</i>\n⏰ Авто-продаж через ${MAX_HOLD_HOURS}г`, 
