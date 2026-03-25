@@ -29,8 +29,10 @@ const t = {
 
 const BANNED_SYMBOLS = ["SOL","WSOL","USDC","USDT","WBTC","PEPE","SHIB","FLOKI","DOGE"];
 const BANNED_SUBSTRINGS = ["SOLANA","WRAPPED","BITCOIN","ETHEREUM","OFFICIAL","VERIFIED","REAL","LEGIT","SAFE","ELON","TRUMP"];
-const BANNED_ADDRESSES = ["De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump"];
-
+const BANNED_ADDRESSES = [
+    "De4ULouuU2cAQkhKuYrsrFtJGRRmcSwQD5esmnAUpump",
+    "AzF45Ecam87JEktFZ6ecoWRNg1g1jPBBPR2gcfe8Dk2L"  // FIGURE03 — banned
+];
 const TAKE_PROFIT = 15;
 const STOP_LOSS = 10;
 const TRAILING_DROP = 8;
