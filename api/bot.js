@@ -12,23 +12,17 @@ const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet
 
 async function getSolPrice() {
     try {
-        const res = await fetch(
-            'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
-            { signal: AbortSignal.timeout(3000) }
-        );
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', { signal: AbortSignal.timeout(3000) });
         const data = await res.json();
         if (data?.solana?.usd) return parseFloat(data.solana.usd);
     } catch(e) {}
     try {
-        const res = await fetch(
-            'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
-            { signal: AbortSignal.timeout(3000) }
-        );
+        const res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112', { signal: AbortSignal.timeout(3000) });
         const data = await res.json();
         const price = data?.data?.['So11111111111111111111111111111111111111112']?.price;
         if (price) return parseFloat(price);
     } catch(e) {}
-    return 88; // актуальний fallback
+    return 88;
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
@@ -46,10 +40,13 @@ async function sendMessage(chatId, text, replyMarkup = null) {
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
     const body = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
-    try { await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch(e) {}
+    try {
+        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+    } catch(e) {}
 }
 
-// ✅ Закріплене повідомлення — оновлює існуюче або створює нове
 async function updatePinnedMenu(chatId, text, replyMarkup) {
     const pinnedMsgId = await redis.get(`pinned_msg_${chatId}`);
     if (pinnedMsgId) {
@@ -58,7 +55,6 @@ async function updatePinnedMenu(chatId, text, replyMarkup) {
             return parseInt(pinnedMsgId);
         } catch(e) {}
     }
-    // Якщо немає — створюємо нове і закріплюємо
     const msgId = await sendMessage(chatId, text, replyMarkup);
     if (msgId) {
         await redis.set(`pinned_msg_${chatId}`, msgId.toString());
@@ -88,26 +84,34 @@ async function panicSellAll(chatId, privateKey) {
                     const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mint}&outputMint=${solMint}&amount=${amountInfo.amount}&slippageBps=300`, { headers: jupHeaders });
                     const quoteData = await quoteRes.json();
                     if (quoteData.error || !quoteData.outAmount) continue;
-                    const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', { method: 'POST', headers: jupHeaders, body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() }) });
+                    const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
+                        method: 'POST', headers: jupHeaders,
+                        body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() })
+                    });
                     const swapData = await swapRes.json();
                     if (!swapData.swapTransaction) continue;
                     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
                     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
                     transaction.sign([wallet]);
                     await connection.sendRawTransaction(transaction.serialize());
+                    // ✅ Очищаємо всі Redis ключи для цього токена
                     await redis.del(`buy_price_${mint}_${chatId}`);
                     await redis.del(`max_price_${mint}_${chatId}`);
+                    await redis.del(`token_info_${mint}_${chatId}`);
                     soldCount++;
                 } catch (e) {}
             }
         }
+        // ✅ Скидаємо всі lock-и після panic sell
+        await redis.del(`active_buy_${chatId}`);
+        await redis.del(`buy_lock_${chatId}`);
         return soldCount;
     } catch (error) { return 0; }
 }
 
 const t = {
     uk: {
-        welcome: (w, usd) => `👋 <b>Радий вітати! Я — ваш ШІ-помічник для трейдингу.</b>\n\n💼 <b>Ваш гаманець:</b>\n<code>${w}</code>\n\n🚀 <b>Як почати?</b>\nПоповніть на <b>0.05 SOL (~$${usd})</b> і я почну торгувати!`,
+        welcome: (w, usd, active) => `👋 <b>Радий вітати! Я — ваш ШІ-помічник для трейдингу.</b>\n\n💼 <b>Ваш гаманець:</b>\n<code>${w}</code>\n\n🚀 <b>Як почати?</b>\nПоповніть на <b>0.05 SOL (~$${usd})</b> і я почну торгувати!\n\n${active ? '🟢 Агент: <b>Активний</b>' : '🔴 Агент: <b>Зупинений</b>'}`,
         port_head: "📊 <b>Ваш Портфель та Баланс:</b>\n\n",
         with_prompt: "💸 <b>Виведення коштів</b>\n\nНадішліть <b>адресу гаманця Solana</b>.\n\n<i>ℹ️ Комісія сервісу: 3%.</i>",
         err_with: "❌ <b>Помилка!</b> Недостатньо коштів або невірна адреса.",
@@ -117,23 +121,27 @@ const t = {
         panic_confirm: "⚠️ <b>УВАГА! Екстрений Продаж</b>\n\nВи впевнені? Всі токени будуть продані негайно за ринковою ціною.\n\n<i>Це може призвести до збитків якщо монети зараз в мінусі!</i>",
         panic_conf: "✅ <b>Екстрений продаж виконано.</b> Всі монети конвертовано в SOL.",
         panic_err: "⚠️ Монет для продажу не знайдено.",
-        btns: { port: "📊 Мій Портфель", with: "💸 Вивести", set: "⚙️ Налаштування", ref: "🎁 Бонуси", lang: "🌐 Мова", back: "🔙 Назад", menu: "🔙 Меню", panic: "🚨 Екстрений Продаж", panic_yes: "✅ ТАК, ПРОДАТИ ВСЕ", panic_no: "❌ Скасувати" }
+        agent_stopped: "🔴 <b>Агент зупинений!</b>\n\nБот більше не буде купувати токени. Натисніть 🟢 Старт щоб відновити.",
+        agent_started: "🟢 <b>Агент запущений!</b>\n\nБот почне шукати токени на наступному скані.",
+        btns: { port: "📊 Мій Портфель", with: "💸 Вивести", set: "⚙️ Налаштування", ref: "🎁 Бонуси", lang: "🌐 Мова", back: "🔙 Назад", menu: "🔙 Меню", panic: "🚨 Екстрений Продаж", panic_yes: "✅ ТАК, ПРОДАТИ ВСЕ", panic_no: "❌ Скасувати", stop: "🔴 Зупинити агента", start: "🟢 Запустити агента" }
     },
     en: {
-        welcome: (w, usd) => `👋 <b>Welcome! I am your AI Trading Assistant.</b>\n\n💼 <b>Your wallet:</b>\n<code>${w}</code>\n\n🚀 Deposit <b>0.05 SOL (~$${usd})</b> to start!`,
+        welcome: (w, usd, active) => `👋 <b>Welcome! I am your AI Trading Assistant.</b>\n\n💼 <b>Your wallet:</b>\n<code>${w}</code>\n\n🚀 Deposit <b>0.05 SOL (~$${usd})</b> to start!\n\n${active ? '🟢 Agent: <b>Active</b>' : '🔴 Agent: <b>Stopped</b>'}`,
         port_head: "📊 <b>Your Portfolio & Balance:</b>\n\n",
         with_prompt: "💸 <b>Withdraw Funds</b>\n\nSend your <b>Solana wallet address</b>.\n\n<i>ℹ️ 3% service fee applies.</i>",
         err_with: "❌ <b>Error!</b> Insufficient funds or invalid address.",
         succ_with: (u, f, to, tx) => `✅ <b>Withdrawn!</b>\n💸 To you: <b>${u} SOL</b>\n💎 Fee: <b>${f} SOL</b>\n🔍 <a href="https://solscan.io/tx/${tx}">Receipt</a>`,
         ref_msg: (l) => `🎁 <b>Referrals</b>\n🔗 <b>Link:</b>\n<code>${l}</code>\nInvite friends to reduce your fee to 2%!`,
         set_main: (s, usd) => `⚙️ <b>Settings</b>\n💸 <b>Trade Amount:</b> ${s.tradeAmount} SOL (~$${usd})\n📈 <b>Take-Profit:</b> +${s.takeProfit}%\n📉 <b>Stop-Loss:</b> -${s.stopLoss}%`,
-        panic_confirm: "⚠️ <b>CONFIRM: Panic Sell</b>\n\nAre you sure? All tokens will be sold immediately at market price.\n\n<i>This may result in losses if tokens are currently negative!</i>",
+        panic_confirm: "⚠️ <b>CONFIRM: Panic Sell</b>\n\nAre you sure? All tokens will be sold immediately.",
         panic_conf: "✅ <b>Panic Sell completed.</b> All tokens converted to SOL.",
         panic_err: "⚠️ No tokens found to sell.",
-        btns: { port: "📊 Portfolio", with: "💸 Withdraw", set: "⚙️ Settings", ref: "🎁 Bonuses", lang: "🌐 Language", back: "🔙 Back", menu: "🔙 Menu", panic: "🚨 Panic Sell", panic_yes: "✅ YES, SELL ALL", panic_no: "❌ Cancel" }
+        agent_stopped: "🔴 <b>Agent stopped!</b>\n\nBot will no longer buy tokens. Press 🟢 Start to resume.",
+        agent_started: "🟢 <b>Agent started!</b>\n\nBot will start scanning on next run.",
+        btns: { port: "📊 Portfolio", with: "💸 Withdraw", set: "⚙️ Settings", ref: "🎁 Bonuses", lang: "🌐 Language", back: "🔙 Back", menu: "🔙 Menu", panic: "🚨 Panic Sell", panic_yes: "✅ YES, SELL ALL", panic_no: "❌ Cancel", stop: "🔴 Stop Agent", start: "🟢 Start Agent" }
     },
     el: {
-        welcome: (w, usd) => `👋 <b>Καλώς ήρθατε! Είμαι ο AI Βοηθός σας.</b>\n\n💼 <b>Πορτοφόλι:</b>\n<code>${w}</code>\n\n🚀 Καταθέστε <b>0.05 SOL (~$${usd})</b> για να ξεκινήσετε!`,
+        welcome: (w, usd, active) => `👋 <b>Καλώς ήρθατε! Είμαι ο AI Βοηθός σας.</b>\n\n💼 <b>Πορτοφόλι:</b>\n<code>${w}</code>\n\n🚀 Καταθέστε <b>0.05 SOL (~$${usd})</b> για να ξεκινήσετε!\n\n${active ? '🟢 Agent: <b>Ενεργός</b>' : '🔴 Agent: <b>Σταματημένος</b>'}`,
         port_head: "📊 <b>Χαρτοφυλάκιο & Υπόλοιπο:</b>\n\n",
         with_prompt: "💸 <b>Ανάληψη</b>\nΣτείλτε τη διεύθυνση Solana σας.\n<i>ℹ️ Χρέωση 3%.</i>",
         err_with: "❌ Σφάλμα! Ανεπαρκή κεφάλαια.",
@@ -143,7 +151,9 @@ const t = {
         panic_confirm: "⚠️ <b>Επείγουσα Πώληση;</b>\n\nΕίστε σίγουροι; Όλα τα tokens θα πουληθούν!",
         panic_conf: "✅ <b>Επείγουσα Πώληση ολοκληρώθηκε.</b>",
         panic_err: "⚠️ Δεν βρέθηκαν tokens.",
-        btns: { port: "📊 Χαρτοφυλάκιο", with: "💸 Ανάληψη", set: "⚙️ Ρυθμίσεις", ref: "🎁 Μπόνους", lang: "🌐 Γλώσσα", back: "🔙 Πίσω", menu: "🔙 Μενού", panic: "🚨 Επείγουσα Πώληση", panic_yes: "✅ ΝΑΙ, ΠΟΥΛΗΣΗ ΟΛΩΝ", panic_no: "❌ Άκυρο" }
+        agent_stopped: "🔴 <b>Ο agent σταμάτησε!</b>",
+        agent_started: "🟢 <b>Ο agent ξεκίνησε!</b>",
+        btns: { port: "📊 Χαρτοφυλάκιο", with: "💸 Ανάληψη", set: "⚙️ Ρυθμίσεις", ref: "🎁 Μπόνους", lang: "🌐 Γλώσσα", back: "🔙 Πίσω", menu: "🔙 Μενού", panic: "🚨 Επείγουσα Πώληση", panic_yes: "✅ ΝΑΙ, ΠΟΥΛΗΣΗ ΟΛΩΝ", panic_no: "❌ Άκυρο", stop: "🔴 Διακοπή Agent", start: "🟢 Εκκίνηση Agent" }
     }
 };
 
@@ -153,10 +163,12 @@ export default async function handler(req, res) {
     try {
         const update = req.body;
 
-        const getMainMenuKeyboard = (l) => ({
+        // ✅ Головне меню тепер показує статус агента і кнопку Старт/Стоп
+        const getMainMenuKeyboard = (l, isActive) => ({
             inline_keyboard: [
                 [{ text: t[l].btns.port, callback_data: "portfolio" }, { text: t[l].btns.ref, callback_data: "referral" }],
-                [{ text: t[l].btns.set, callback_data: "settings" }, { text: t[l].btns.with, callback_data: "withdraw" }]
+                [{ text: t[l].btns.set, callback_data: "settings" }, { text: t[l].btns.with, callback_data: "withdraw" }],
+                [{ text: isActive ? t[l].btns.stop : t[l].btns.start, callback_data: isActive ? "stop_agent" : "start_agent" }]
             ]
         });
 
@@ -191,8 +203,7 @@ export default async function handler(req, res) {
                             walletAddress: wallet.publicKey.toString(),
                             privateKey: bs58.encode(wallet.secretKey),
                             isActive: true,
-                            // ✅ Оновлені дефолтні налаштування
-                            settings: { tradeAmount: 0.005, takeProfit: 15, stopLoss: 10 },
+                            settings: { tradeAmount: 0.02, takeProfit: 15, stopLoss: 10 },
                             lang: null,
                             refCount: 0,
                             invitedBy: refCode ? refCode.replace('ref_', '') : null
@@ -215,8 +226,12 @@ export default async function handler(req, res) {
                         await sendMessage(chatId, "🌐 <b>Choose your language:</b>", langKeyboard);
                     } else {
                         const solPrice = await getSolPrice();
-                        // ✅ Головне меню — закріплене повідомлення
-                        await updatePinnedMenu(chatId, t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(userData.lang));
+                        const isActive = userData.isActive !== false;
+                        await updatePinnedMenu(
+                            chatId,
+                            t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), isActive),
+                            getMainMenuKeyboard(userData.lang, isActive)
+                        );
                     }
                 } catch (e) {}
                 return res.status(200).send('OK');
@@ -281,35 +296,68 @@ export default async function handler(req, res) {
                 userData.lang = data.replace('lang_', '');
                 await redis.set(`user_${chatId}`, JSON.stringify(userData));
                 const solPrice = await getSolPrice();
-                // ✅ Після вибору мови — закріплюємо головне меню
-                await updatePinnedMenu(chatId, t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(userData.lang));
+                const isActive = userData.isActive !== false;
+                await updatePinnedMenu(
+                    chatId,
+                    t[userData.lang].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), isActive),
+                    getMainMenuKeyboard(userData.lang, isActive)
+                );
                 return res.status(200).send('OK');
             }
 
             if (!userData.lang) return res.status(200).send('OK');
             const l = userData.lang;
 
-            // ✅ Отримуємо ID закріпленого повідомлення
             const pinnedMsgId = await redis.get(`pinned_msg_${chatId}`);
             const targetMsgId = pinnedMsgId ? parseInt(pinnedMsgId) : messageId;
 
             try {
-               if (data === 'main_menu') {
-    await redis.del(`state_${chatId}`);
-    const solPrice = await getSolPrice();
-    await editMessage(chatId, targetMsgId, t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2)), getMainMenuKeyboard(l));
-}
+                // ✅ СТОП АГЕНТА
+                if (data === 'stop_agent') {
+                    userData.isActive = false;
+                    await redis.set(`user_${chatId}`, JSON.stringify(userData));
+                    // ✅ Скидаємо всі lock-и
+                    await redis.del(`active_buy_${chatId}`);
+                    await redis.del(`buy_lock_${chatId}`);
+                    const solPrice = await getSolPrice();
+                    await editMessage(chatId, targetMsgId, 
+                        t[l].agent_stopped + '\n\n' + t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), false),
+                        getMainMenuKeyboard(l, false)
+                    );
+                }
+
+                // ✅ СТАРТ АГЕНТА
+                else if (data === 'start_agent') {
+                    userData.isActive = true;
+                    await redis.set(`user_${chatId}`, JSON.stringify(userData));
+                    const solPrice = await getSolPrice();
+                    await editMessage(chatId, targetMsgId,
+                        t[l].agent_started + '\n\n' + t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), true),
+                        getMainMenuKeyboard(l, true)
+                    );
+                }
+
+                else if (data === 'main_menu') {
+                    await redis.del(`state_${chatId}`);
+                    const solPrice = await getSolPrice();
+                    const isActive = userData.isActive !== false;
+                    await editMessage(chatId, targetMsgId,
+                        t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), isActive),
+                        getMainMenuKeyboard(l, isActive)
+                    );
+                }
 
                 else if (data === 'portfolio') {
                     await editMessage(chatId, targetMsgId, "⏳ <i>Аналізую блокчейн...</i>", { inline_keyboard: [] });
                     const solPrice = await getSolPrice();
                     const balance = await connection.getBalance(new PublicKey(userData.walletAddress));
                     const solUi = (balance / 1e9).toFixed(4);
-                    const usdBal = (solUi * solPrice).toFixed(2);
+                    const usdBal = (parseFloat(solUi) * solPrice).toFixed(2);
+                    const isActive = userData.isActive !== false;
 
                     let portfolioText = t[l].port_head;
                     portfolioText += `💰 <b>Баланс:</b> ${solUi} SOL (~$${usdBal})\n`;
-                    portfolioText += `🟢 <b>ШІ-Агент:</b> Активний\n\n`;
+                    portfolioText += `${isActive ? '🟢' : '🔴'} <b>ШІ-Агент:</b> ${isActive ? 'Активний' : 'Зупинений'}\n\n`;
                     
                     const lastScan = await redis.get(`last_scan_${chatId}`);
                     portfolioText += `👀 <b>Активність ШІ:</b>\n${lastScan || '<i>Шукає нові монети на ринку...</i>'}\n\n`;
@@ -336,7 +384,7 @@ export default async function handler(req, res) {
                                 let tokenName = tokenInfo?.symbol || `${mint.substring(0, 4)}...${mint.slice(-4)}`;
 
                                 try {
-                                    const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+                                    const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
                                     const dexData = await dexRes.json();
                                     if (dexData.pairs && dexData.pairs.length > 0) {
                                         tokenName = dexData.pairs[0].baseToken.name || dexData.pairs[0].baseToken.symbol;
@@ -352,7 +400,7 @@ export default async function handler(req, res) {
                                     }
                                 } catch (e) {}
                                 
-                                portfolioText += `🔸 <b>${tokenName}:</b> ${amountInfo.uiAmount} шт.\n   └ PnL: ${pnlInfo}\n`;
+                                portfolioText += `🔸 <b>${tokenName}:</b> ${amountInfo.uiAmount.toFixed(2)} шт.\n   └ PnL: ${pnlInfo}\n`;
                             }
                         }
                     } catch (e) { portfolioText += `⚠️ Помилка зчитування гаманця.\n`; }
@@ -361,12 +409,12 @@ export default async function handler(req, res) {
 
                     const portKeyboard = { inline_keyboard: [
                         ...(hasTokens ? [[{ text: t[l].btns.panic, callback_data: "panic_sell" }]] : []),
+                        [{ text: isActive ? t[l].btns.stop : t[l].btns.start, callback_data: isActive ? "stop_agent" : "start_agent" }],
                         [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                     ]};
                     await editMessage(chatId, targetMsgId, portfolioText, portKeyboard);
                 }
 
-                // ✅ КРОК 1: Підтвердження екстреного продажу
                 else if (data === 'panic_sell') {
                     const confirmKeyboard = { inline_keyboard: [
                         [{ text: t[l].btns.panic_yes, callback_data: "panic_sell_confirmed" }],
@@ -375,7 +423,6 @@ export default async function handler(req, res) {
                     await editMessage(chatId, targetMsgId, t[l].panic_confirm, confirmKeyboard);
                 }
 
-                // ✅ КРОК 2: Виконання після підтвердження
                 else if (data === 'panic_sell_confirmed') {
                     await editMessage(chatId, targetMsgId, "⏳ <i>Продаю всі монети...</i>", { inline_keyboard: [] });
                     const soldCount = await panicSellAll(chatId, userData.privateKey);
@@ -395,7 +442,6 @@ export default async function handler(req, res) {
 
                 else if (data === 'settings') {
                     const solPrice = await getSolPrice();
-                    // ✅ Додано кнопки TP: 15% та SL: 10%
                     const keyboard = { inline_keyboard: [
                         [{ text: `💸 ${userData.settings.tradeAmount} SOL`, callback_data: "edit_trade" }, { text: `📈 TP: +${userData.settings.takeProfit}%`, callback_data: "edit_tp" }],
                         [{ text: t[l].btns.lang, callback_data: "choose_lang" }, { text: `📉 SL: -${userData.settings.stopLoss}%`, callback_data: "edit_sl" }],
@@ -411,14 +457,13 @@ export default async function handler(req, res) {
                 else if (data === 'edit_trade') {
                     const keyboard = { inline_keyboard: [
                         [{ text: "0.005 SOL", callback_data: "set_trade_0.005" }, { text: "0.01 SOL", callback_data: "set_trade_0.01" }],
-                        [{ text: "0.02 SOL", callback_data: "set_trade_0.02" }, { text: "0.05 SOL", callback_data: "set_trade_0.05" }],
+                        [{ text: "0.02 SOL ⭐", callback_data: "set_trade_0.02" }, { text: "0.05 SOL", callback_data: "set_trade_0.05" }],
                         [{ text: "0.1 SOL", callback_data: "set_trade_0.1" }, { text: "0.5 SOL", callback_data: "set_trade_0.5" }],
                         [{ text: t[l].btns.back, callback_data: "settings" }]
                     ]};
                     await editMessage(chatId, targetMsgId, "💸 <b>Оберіть суму для однієї покупки:</b>", keyboard);
                 }
 
-                // ✅ Take-Profit з новими значеннями 10/15/20/30/50%
                 else if (data === 'edit_tp') {
                     const keyboard = { inline_keyboard: [
                         [{ text: "+10%", callback_data: "set_tp_10" }, { text: "+15% ⭐", callback_data: "set_tp_15" }],
@@ -429,7 +474,6 @@ export default async function handler(req, res) {
                     await editMessage(chatId, targetMsgId, "📈 <b>Оберіть Take-Profit:</b>\n\n⭐ = рекомендовано для скальпінгу", keyboard);
                 }
 
-                // ✅ Stop-Loss з новими значеннями 5/10/15/25%
                 else if (data === 'edit_sl') {
                     const keyboard = { inline_keyboard: [
                         [{ text: "-5%", callback_data: "set_sl_5" }, { text: "-10% ⭐", callback_data: "set_sl_10" }],
