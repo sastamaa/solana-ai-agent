@@ -3,9 +3,9 @@ import bs58 from 'bs58';
 import { Redis } from '@upstash/redis';
 import fetch from 'node-fetch';
 
-const OWNER_WALLET = new PublicKey("A9KVi2nKqbSbCbHJEfaYayJtHwCT5T5G29EhQQPNKPcn"); 
-const FEE_PERCENT = 0.03; 
-const BOT_USERNAME = process.env.BOT_USERNAME || "moneymakersol_bot"; 
+const OWNER_WALLET = new PublicKey("A9KVi2nKqbSbCbHJEfaYayJtHwCT5T5G29EhQQPNKPcn");
+const FEE_PERCENT = 0.03;
+const BOT_USERNAME = process.env.BOT_USERNAME || "moneymakersol_bot";
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
 const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=15319ab4-3e9a-4c28-98e8-132d733db9b9');
@@ -26,7 +26,7 @@ async function getSolPrice() {
 }
 
 async function sendMessage(chatId, text, replyMarkup = null) {
-    const body = { chat_id: chatId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
+    const body = { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
     try {
         const res = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -38,7 +38,7 @@ async function sendMessage(chatId, text, replyMarkup = null) {
 }
 
 async function editMessage(chatId, messageId, text, replyMarkup = null) {
-    const body = { chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML', disable_web_page_preview: true };
+    const body = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
     try {
         await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
@@ -71,7 +71,10 @@ async function updatePinnedMenu(chatId, text, replyMarkup) {
 async function panicSellAll(chatId, privateKey) {
     try {
         const wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
-        const accounts = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+        const accounts = await connection.getParsedTokenAccountsByOwner(
+            wallet.publicKey,
+            { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
+        );
         const solMint = "So11111111111111111111111111111111111111112";
         const jupHeaders = { 'Content-Type': 'application/json', 'x-api-key': process.env.JUPITER_API_KEY };
         let soldCount = 0;
@@ -81,32 +84,38 @@ async function panicSellAll(chatId, privateKey) {
             const mint = acc.account.data.parsed.info.mint;
             if (amountInfo.uiAmount > 0 && mint !== solMint) {
                 try {
-                    const quoteRes = await fetch(`https://api.jup.ag/swap/v1/quote?inputMint=${mint}&outputMint=${solMint}&amount=${amountInfo.amount}&slippageBps=300`, { headers: jupHeaders });
+                    const quoteRes = await fetch(
+                        `https://api.jup.ag/swap/v1/quote?inputMint=${mint}&outputMint=${solMint}&amount=${amountInfo.amount}&slippageBps=300`,
+                        { headers: jupHeaders }
+                    );
                     const quoteData = await quoteRes.json();
                     if (quoteData.error || !quoteData.outAmount) continue;
+
                     const swapRes = await fetch('https://api.jup.ag/swap/v1/swap', {
                         method: 'POST', headers: jupHeaders,
                         body: JSON.stringify({ quoteResponse: quoteData, userPublicKey: wallet.publicKey.toString() })
                     });
                     const swapData = await swapRes.json();
                     if (!swapData.swapTransaction) continue;
+
                     const swapTransactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
                     const transaction = VersionedTransaction.deserialize(swapTransactionBuf);
+                    const { blockhash } = await connection.getLatestBlockhash('finalized');
+                    transaction.message.recentBlockhash = blockhash;
                     transaction.sign([wallet]);
-                    await connection.sendRawTransaction(transaction.serialize());
-                    // ✅ Очищаємо всі Redis ключи для цього токена
+                    await connection.sendRawTransaction(transaction.serialize(), { skipPreflight: true, maxRetries: 3 });
+
                     await redis.del(`buy_price_${mint}_${chatId}`);
                     await redis.del(`max_price_${mint}_${chatId}`);
                     await redis.del(`token_info_${mint}_${chatId}`);
                     soldCount++;
-                } catch (e) {}
+                } catch(e) {}
             }
         }
-        // ✅ Скидаємо всі lock-и після panic sell
         await redis.del(`active_buy_${chatId}`);
         await redis.del(`buy_lock_${chatId}`);
         return soldCount;
-    } catch (error) { return 0; }
+    } catch(e) { return 0; }
 }
 
 const t = {
@@ -123,7 +132,8 @@ const t = {
         panic_err: "⚠️ Монет для продажу не знайдено.",
         agent_stopped: "🔴 <b>Агент зупинений!</b>\n\nБот більше не буде купувати токени. Натисніть 🟢 Старт щоб відновити.",
         agent_started: "🟢 <b>Агент запущений!</b>\n\nБот почне шукати токени на наступному скані.",
-        btns: { port: "📊 Мій Портфель", with: "💸 Вивести", set: "⚙️ Налаштування", ref: "🎁 Бонуси", lang: "🌐 Мова", back: "🔙 Назад", menu: "🔙 Меню", panic: "🚨 Екстрений Продаж", panic_yes: "✅ ТАК, ПРОДАТИ ВСЕ", panic_no: "❌ Скасувати", stop: "🔴 Зупинити агента", start: "🟢 Запустити агента" }
+        no_tokens: "<i>Немає куплених токенів. ШІ шукає позицію.</i>",
+        btns: { port: "📊 Мій Портфель", with: "💸 Вивести", set: "⚙️ Налаштування", ref: "🎁 Бонуси", lang: "🌐 Мова", back: "🔙 Назад", menu: "🔙 Меню", panic: "🚨 Екстрений Продаж", panic_yes: "✅ ТАК, ПРОДАТИ ВСЕ", panic_no: "❌ Скасувати", stop: "🔴 Зупинити агента", start: "🟢 Запустити агента", refresh: "🔄 Оновити" }
     },
     en: {
         welcome: (w, usd, active) => `👋 <b>Welcome! I am your AI Trading Assistant.</b>\n\n💼 <b>Your wallet:</b>\n<code>${w}</code>\n\n🚀 Deposit <b>0.05 SOL (~$${usd})</b> to start!\n\n${active ? '🟢 Agent: <b>Active</b>' : '🔴 Agent: <b>Stopped</b>'}`,
@@ -138,7 +148,8 @@ const t = {
         panic_err: "⚠️ No tokens found to sell.",
         agent_stopped: "🔴 <b>Agent stopped!</b>\n\nBot will no longer buy tokens. Press 🟢 Start to resume.",
         agent_started: "🟢 <b>Agent started!</b>\n\nBot will start scanning on next run.",
-        btns: { port: "📊 Portfolio", with: "💸 Withdraw", set: "⚙️ Settings", ref: "🎁 Bonuses", lang: "🌐 Language", back: "🔙 Back", menu: "🔙 Menu", panic: "🚨 Panic Sell", panic_yes: "✅ YES, SELL ALL", panic_no: "❌ Cancel", stop: "🔴 Stop Agent", start: "🟢 Start Agent" }
+        no_tokens: "<i>No tokens found. AI is scanning the market.</i>",
+        btns: { port: "📊 Portfolio", with: "💸 Withdraw", set: "⚙️ Settings", ref: "🎁 Bonuses", lang: "🌐 Language", back: "🔙 Back", menu: "🔙 Menu", panic: "🚨 Panic Sell", panic_yes: "✅ YES, SELL ALL", panic_no: "❌ Cancel", stop: "🔴 Stop Agent", start: "🟢 Start Agent", refresh: "🔄 Refresh" }
     },
     el: {
         welcome: (w, usd, active) => `👋 <b>Καλώς ήρθατε! Είμαι ο AI Βοηθός σας.</b>\n\n💼 <b>Πορτοφόλι:</b>\n<code>${w}</code>\n\n🚀 Καταθέστε <b>0.05 SOL (~$${usd})</b> για να ξεκινήσετε!\n\n${active ? '🟢 Agent: <b>Ενεργός</b>' : '🔴 Agent: <b>Σταματημένος</b>'}`,
@@ -153,7 +164,8 @@ const t = {
         panic_err: "⚠️ Δεν βρέθηκαν tokens.",
         agent_stopped: "🔴 <b>Ο agent σταμάτησε!</b>",
         agent_started: "🟢 <b>Ο agent ξεκίνησε!</b>",
-        btns: { port: "📊 Χαρτοφυλάκιο", with: "💸 Ανάληψη", set: "⚙️ Ρυθμίσεις", ref: "🎁 Μπόνους", lang: "🌐 Γλώσσα", back: "🔙 Πίσω", menu: "🔙 Μενού", panic: "🚨 Επείγουσα Πώληση", panic_yes: "✅ ΝΑΙ, ΠΟΥΛΗΣΗ ΟΛΩΝ", panic_no: "❌ Άκυρο", stop: "🔴 Διακοπή Agent", start: "🟢 Εκκίνηση Agent" }
+        no_tokens: "<i>Δεν βρέθηκαν tokens. Ο AI σαρώνει την αγορά.</i>",
+        btns: { port: "📊 Χαρτοφυλάκιο", with: "💸 Ανάληψη", set: "⚙️ Ρυθμίσεις", ref: "🎁 Μπόνους", lang: "🌐 Γλώσσα", back: "🔙 Πίσω", menu: "🔙 Μενού", panic: "🚨 Επείγουσα Πώληση", panic_yes: "✅ ΝΑΙ, ΠΟΥΛΗΣΗ ΟΛΩΝ", panic_no: "❌ Άκυρο", stop: "🔴 Διακοπή Agent", start: "🟢 Εκκίνηση Agent", refresh: "🔄 Ανανέωση" }
     }
 };
 
@@ -163,7 +175,6 @@ export default async function handler(req, res) {
     try {
         const update = req.body;
 
-        // ✅ Головне меню тепер показує статус агента і кнопку Старт/Стоп
         const getMainMenuKeyboard = (l, isActive) => ({
             inline_keyboard: [
                 [{ text: t[l].btns.port, callback_data: "portfolio" }, { text: t[l].btns.ref, callback_data: "referral" }],
@@ -191,11 +202,11 @@ export default async function handler(req, res) {
 
                 try {
                     await redis.del(`state_${chatId}`);
-                    const refCode = text.split(' ')[1]; 
-                    
+                    const refCode = text.split(' ')[1];
+
                     let userDataStr = await redis.get(`user_${chatId}`);
                     let userData;
-                    
+
                     if (!userDataStr) {
                         const wallet = Keypair.generate();
                         userData = {
@@ -209,7 +220,7 @@ export default async function handler(req, res) {
                             invitedBy: refCode ? refCode.replace('ref_', '') : null
                         };
                         await redis.set(`user_${chatId}`, JSON.stringify(userData));
-                        
+
                         if (userData.invitedBy) {
                             let inviterStr = await redis.get(`user_${userData.invitedBy}`);
                             if (inviterStr) {
@@ -233,8 +244,9 @@ export default async function handler(req, res) {
                             getMainMenuKeyboard(userData.lang, isActive)
                         );
                     }
-                } catch (e) {}
+                } catch(e) {}
                 return res.status(200).send('OK');
+
             } else {
                 const state = await redis.get(`state_${chatId}`);
                 if (state === 'awaiting_withdraw') {
@@ -242,19 +254,19 @@ export default async function handler(req, res) {
                     let userDataStr = await redis.get(`user_${chatId}`);
                     let userData = typeof userDataStr === 'string' ? JSON.parse(userDataStr) : userDataStr;
                     const l = userData.lang || 'uk';
-                    
+
                     try {
                         const toPublicKey = new PublicKey(text);
                         const fromWallet = Keypair.fromSecretKey(bs58.decode(userData.privateKey));
-                        await sendMessage(chatId, "⏳...");
+                        await sendMessage(chatId, "⏳ Обробляю виведення...");
 
                         const balance = await connection.getBalance(fromWallet.publicKey);
                         if (balance <= 5000000) throw new Error("No funds");
 
                         const totalAvailable = balance - 5000000;
                         let currentFeePercent = FEE_PERCENT;
-                        if (userData.refCount && userData.refCount >= 1) currentFeePercent = 0.02; 
-                        if (userData.invitedBy && (!userData.refCount || userData.refCount === 0)) currentFeePercent = 0.025; 
+                        if (userData.refCount && userData.refCount >= 1) currentFeePercent = 0.02;
+                        if (userData.invitedBy && (!userData.refCount || userData.refCount === 0)) currentFeePercent = 0.025;
 
                         const ownerFeeLamports = Math.floor(totalAvailable * currentFeePercent);
                         const userLamports = totalAvailable - ownerFeeLamports;
@@ -269,8 +281,12 @@ export default async function handler(req, res) {
                         transaction.sign(fromWallet);
 
                         const txid = await connection.sendRawTransaction(transaction.serialize());
-                        await sendMessage(chatId, t[l].succ_with((userLamports / 1e9).toFixed(5), (ownerFeeLamports / 1e9).toFixed(5), text, txid));
-                    } catch (e) { await sendMessage(chatId, t[l].err_with); }
+                        await sendMessage(chatId, t[l].succ_with(
+                            (userLamports / 1e9).toFixed(5),
+                            (ownerFeeLamports / 1e9).toFixed(5),
+                            text, txid
+                        ));
+                    } catch(e) { await sendMessage(chatId, t[l].err_with); }
                     return res.status(200).send('OK');
                 }
             }
@@ -281,14 +297,14 @@ export default async function handler(req, res) {
             const chatId = update.callback_query.message.chat.id;
             const messageId = update.callback_query.message.message_id;
             const data = update.callback_query.data;
-            
+
             try {
                 await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ callback_query_id: update.callback_query.id })
                 });
             } catch(e) {}
-            
+
             let dbData = await redis.get(`user_${chatId}`);
             let userData = typeof dbData === 'string' ? JSON.parse(dbData) : dbData;
 
@@ -312,21 +328,18 @@ export default async function handler(req, res) {
             const targetMsgId = pinnedMsgId ? parseInt(pinnedMsgId) : messageId;
 
             try {
-                // ✅ СТОП АГЕНТА
                 if (data === 'stop_agent') {
                     userData.isActive = false;
                     await redis.set(`user_${chatId}`, JSON.stringify(userData));
-                    // ✅ Скидаємо всі lock-и
                     await redis.del(`active_buy_${chatId}`);
                     await redis.del(`buy_lock_${chatId}`);
                     const solPrice = await getSolPrice();
-                    await editMessage(chatId, targetMsgId, 
+                    await editMessage(chatId, targetMsgId,
                         t[l].agent_stopped + '\n\n' + t[l].welcome(userData.walletAddress, (0.05 * solPrice).toFixed(2), false),
                         getMainMenuKeyboard(l, false)
                     );
                 }
 
-                // ✅ СТАРТ АГЕНТА
                 else if (data === 'start_agent') {
                     userData.isActive = true;
                     await redis.set(`user_${chatId}`, JSON.stringify(userData));
@@ -358,11 +371,13 @@ export default async function handler(req, res) {
                     let portfolioText = t[l].port_head;
                     portfolioText += `💰 <b>Баланс:</b> ${solUi} SOL (~$${usdBal})\n`;
                     portfolioText += `${isActive ? '🟢' : '🔴'} <b>ШІ-Агент:</b> ${isActive ? 'Активний' : 'Зупинений'}\n\n`;
-                    
+
                     const lastScan = await redis.get(`last_scan_${chatId}`);
-                    portfolioText += `👀 <b>Активність ШІ:</b>\n${lastScan || '<i>Шукає нові монети на ринку...</i>'}\n\n`;
+                    // ✅ Замінюємо всі \\n на \n у тексті з Redis (якщо старі записи)
+                    const lastScanClean = lastScan ? lastScan.toString().replace(/\\n/g, '\n') : null;
+                    portfolioText += `👀 <b>Активність ШІ:</b>\n${lastScanClean || '<i>Шукає нові монети на ринку...</i>'}\n\n`;
                     portfolioText += `🪙 <b>Куплені токени:</b>\n`;
-                    
+
                     let hasTokens = false;
                     try {
                         const accounts = await connection.getParsedTokenAccountsByOwner(
@@ -370,46 +385,67 @@ export default async function handler(req, res) {
                             { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
                         );
                         const solMint = "So11111111111111111111111111111111111111112";
-                        
+
                         for (const acc of accounts.value) {
                             const amountInfo = acc.account.data.parsed.info.tokenAmount;
                             const mint = acc.account.data.parsed.info.mint;
-                            
+
                             if (amountInfo.uiAmount > 0 && mint !== solMint) {
                                 hasTokens = true;
                                 const buyPriceStr = await redis.get(`buy_price_${mint}_${chatId}`);
                                 const tokenInfoStr = await redis.get(`token_info_${mint}_${chatId}`);
-                                const tokenInfo = tokenInfoStr ? (typeof tokenInfoStr === 'string' ? JSON.parse(tokenInfoStr) : tokenInfoStr) : null;
-                                let pnlInfo = "<i>Аналіз ціни...</i>";
+                                const tokenInfo = tokenInfoStr
+                                    ? (typeof tokenInfoStr === 'string' ? JSON.parse(tokenInfoStr) : tokenInfoStr)
+                                    : null;
+
+                                let pnlInfo = "<i>Завантаження ціни...</i>";
                                 let tokenName = tokenInfo?.symbol || `${mint.substring(0, 4)}...${mint.slice(-4)}`;
+                                let holdTime = "";
+
+                                // ✅ Рахуємо час утримання
+                                if (tokenInfo?.buyTime) {
+                                    const heldMinutes = Math.floor((Date.now() - tokenInfo.buyTime) / (1000 * 60));
+                                    if (heldMinutes < 60) holdTime = ` | ⏱ ${heldMinutes}хв`;
+                                    else holdTime = ` | ⏱ ${Math.floor(heldMinutes/60)}г ${heldMinutes%60}хв`;
+                                }
 
                                 try {
-                                    const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
+                                    const dexRes = await fetch(
+                                        `https://api.dexscreener.com/latest/dex/tokens/${mint}`,
+                                        { signal: AbortSignal.timeout(5000) }
+                                    );
                                     const dexData = await dexRes.json();
                                     if (dexData.pairs && dexData.pairs.length > 0) {
-                                        tokenName = dexData.pairs[0].baseToken.name || dexData.pairs[0].baseToken.symbol;
+                                        tokenName = dexData.pairs[0].baseToken.symbol || tokenName;
                                         const currentPrice = parseFloat(dexData.pairs[0].priceUsd);
                                         const totalUsd = (amountInfo.uiAmount * currentPrice).toFixed(2);
+
                                         if (buyPriceStr) {
                                             const buyPrice = parseFloat(buyPriceStr);
                                             const percentChange = ((currentPrice - buyPrice) / buyPrice) * 100;
                                             const emoji = percentChange >= 0 ? "🟩" : "🟥";
                                             const sign = percentChange >= 0 ? "+" : "";
-                                            pnlInfo = `${emoji} ${sign}${percentChange.toFixed(2)}% | ~$${totalUsd}`;
-                                        } else { pnlInfo = `~$${totalUsd}`; }
+                                            pnlInfo = `${emoji} ${sign}${percentChange.toFixed(2)}% | ~$${totalUsd}${holdTime}`;
+                                        } else {
+                                            pnlInfo = `~$${totalUsd}${holdTime}`;
+                                        }
                                     }
-                                } catch (e) {}
-                                
-                                portfolioText += `🔸 <b>${tokenName}:</b> ${amountInfo.uiAmount.toFixed(2)} шт.\n   └ PnL: ${pnlInfo}\n`;
+                                } catch(e) {
+                                    pnlInfo = buyPriceStr ? "⚠️ Ціна недоступна" : "⚠️ Немає даних";
+                                }
+
+                                portfolioText += `🔸 <b>${tokenName}</b>${holdTime ? '' : ''}\n   └ PnL: ${pnlInfo}\n`;
                             }
                         }
-                    } catch (e) { portfolioText += `⚠️ Помилка зчитування гаманця.\n`; }
-                    
-                    if (!hasTokens) portfolioText += `<i>Немає куплених токенів. ШІ шукає позицію.</i>\n`;
+                    } catch(e) {
+                        portfolioText += `⚠️ Помилка зчитування гаманця.\n`;
+                    }
+
+                    if (!hasTokens) portfolioText += t[l].no_tokens + '\n';
 
                     const portKeyboard = { inline_keyboard: [
                         ...(hasTokens ? [[{ text: t[l].btns.panic, callback_data: "panic_sell" }]] : []),
-                        [{ text: isActive ? t[l].btns.stop : t[l].btns.start, callback_data: isActive ? "stop_agent" : "start_agent" }],
+                        [{ text: t[l].btns.refresh, callback_data: "portfolio" }, { text: isActive ? t[l].btns.stop : t[l].btns.start, callback_data: isActive ? "stop_agent" : "start_agent" }],
                         [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                     ]};
                     await editMessage(chatId, targetMsgId, portfolioText, portKeyboard);
@@ -427,17 +463,23 @@ export default async function handler(req, res) {
                     await editMessage(chatId, targetMsgId, "⏳ <i>Продаю всі монети...</i>", { inline_keyboard: [] });
                     const soldCount = await panicSellAll(chatId, userData.privateKey);
                     const msg = soldCount > 0 ? t[l].panic_conf : t[l].panic_err;
-                    await editMessage(chatId, targetMsgId, msg, { inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]] });
+                    await editMessage(chatId, targetMsgId, msg, {
+                        inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]]
+                    });
                 }
 
                 else if (data === 'withdraw') {
                     await redis.set(`state_${chatId}`, 'awaiting_withdraw', { ex: 3600 });
-                    await editMessage(chatId, targetMsgId, t[l].with_prompt, { inline_keyboard: [[{ text: t[l].btns.back, callback_data: "main_menu" }]] });
+                    await editMessage(chatId, targetMsgId, t[l].with_prompt, {
+                        inline_keyboard: [[{ text: t[l].btns.back, callback_data: "main_menu" }]]
+                    });
                 }
 
                 else if (data === 'referral') {
                     const link = `https://t.me/${BOT_USERNAME}?start=ref_${chatId}`;
-                    await editMessage(chatId, targetMsgId, t[l].ref_msg(link), { inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]] });
+                    await editMessage(chatId, targetMsgId, t[l].ref_msg(link), {
+                        inline_keyboard: [[{ text: t[l].btns.menu, callback_data: "main_menu" }]]
+                    });
                 }
 
                 else if (data === 'settings') {
@@ -447,7 +489,10 @@ export default async function handler(req, res) {
                         [{ text: t[l].btns.lang, callback_data: "choose_lang" }, { text: `📉 SL: -${userData.settings.stopLoss}%`, callback_data: "edit_sl" }],
                         [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                     ]};
-                    await editMessage(chatId, targetMsgId, t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)), keyboard);
+                    await editMessage(chatId, targetMsgId,
+                        t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)),
+                        keyboard
+                    );
                 }
 
                 else if (data === 'choose_lang') {
@@ -489,20 +534,23 @@ export default async function handler(req, res) {
                     if (parts[1] === 'tp') userData.settings.takeProfit = parseFloat(parts[2]);
                     if (parts[1] === 'sl') userData.settings.stopLoss = parseFloat(parts[2]);
                     await redis.set(`user_${chatId}`, JSON.stringify(userData));
-                    
+
                     const solPrice = await getSolPrice();
                     const keyboard = { inline_keyboard: [
                         [{ text: `💸 ${userData.settings.tradeAmount} SOL`, callback_data: "edit_trade" }, { text: `📈 TP: +${userData.settings.takeProfit}%`, callback_data: "edit_tp" }],
                         [{ text: t[l].btns.lang, callback_data: "choose_lang" }, { text: `📉 SL: -${userData.settings.stopLoss}%`, callback_data: "edit_sl" }],
                         [{ text: t[l].btns.menu, callback_data: "main_menu" }]
                     ]};
-                    await editMessage(chatId, targetMsgId, "✅ Збережено!\n\n" + t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)), keyboard);
+                    await editMessage(chatId, targetMsgId,
+                        "✅ Збережено!\n\n" + t[l].set_main(userData.settings, (userData.settings.tradeAmount * solPrice).toFixed(2)),
+                        keyboard
+                    );
                 }
 
-            } catch (err) { console.error(err); }
+            } catch(err) { console.error(err); }
             return res.status(200).send('OK');
         }
 
         return res.status(200).send('OK');
-    } catch (error) { return res.status(200).send('OK'); }
+    } catch(error) { return res.status(200).send('OK'); }
 }
