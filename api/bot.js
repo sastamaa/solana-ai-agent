@@ -41,10 +41,17 @@ async function editMessage(chatId, messageId, text, replyMarkup = null) {
     const body = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', disable_web_page_preview: true };
     if (replyMarkup) body.reply_markup = replyMarkup;
     try {
-        await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        const res = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
         });
-    } catch(e) {}
+        const json = await res.json();
+        if (!json.ok) {
+            const newId = await sendMessage(chatId, text, replyMarkup);
+            if (newId) await redis.set(`pinned_msg_${chatId}`, newId.toString());
+        }
+    } catch(e) {
+        await sendMessage(chatId, text, replyMarkup);
+    }
 }
 
 async function updatePinnedMenu(chatId, text, replyMarkup) {
